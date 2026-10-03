@@ -11,7 +11,7 @@ from dataclasses import replace
 
 import numpy as np
 
-from . import cdp_sort, correction, decon, detection, filters, fold as fold_mod, geometry, nmo, plotting
+from . import cdp_sort, correction, decon, detection, filters, fold as fold_mod, geometry, nmo, noise, plotting
 from . import cdp_flow, segy_io, stack as stack_mod, velocity_setup
 from .pipeline import get_step
 from .saving import DEFAULT_DIR
@@ -126,6 +126,99 @@ def top_mute(state: PipeState, velocity: float = 12000.0, t0_ms: float = 0.0, ta
     g = state.gather
     out = filters.top_mute(g.data, g.dt_ms, g.headers["offset"], velocity, t0_ms, taper_ms)
     return _with_data(state, out), f"line {t0_ms:g} ms + offset / {velocity:g}, taper {taper_ms:g} ms"
+
+
+# ---------------------------------------------------------------------------
+# coherent-noise removal: F-K filter and Radon (functions/noise.py)
+# ---------------------------------------------------------------------------
+_OUTPUTS = ["Filtered data", "Removed noise"]
+
+
+@step("F-K Filter", "Velocity-fan filter in the frequency-wavenumber domain: removes ground roll and other slow linear "
+      "noise (apparent velocities below a cut-off), one receiver line at a time.",
+      params=[Param("v_reject", "Reject apparent velocities below (length unit per s)", "float", 3000.0, min=100, step=100,
+                    group="F-K filter", help="Ground roll and other slow noise travel slower than this; reflections "
+                                             "(apparent velocity far higher) are kept"),
+              Param("v_pass", "Pass apparent velocities above (length unit per s)", "float", 4500.0, min=100, step=100,
+                    group="F-K filter", help="Fully kept above this; a cosine taper between the two velocities avoids "
+                                             "ringing. Must be above the reject velocity"),
+              Param("fk_f_max", "Filter only below, Hz  (0 = all frequencies)", "float", 0.0, min=0, step=5,
+                    group="F-K filter", help="Ground roll is low-frequency: e.g. 25 leaves everything above 25 Hz untouched"),
+              Param("fk_output", "Output", "choice", _OUTPUTS[0], choices=_OUTPUTS, group="F-K filter",
+                    help="Removed noise = what the filter takes away (input minus filtered) - to check that no "
+                         "reflection energy is removed")],
+      order=37)
+def fk_filter_step(state: PipeState, v_reject: float = 3000.0, v_pass: float = 4500.0, fk_f_max: float = 0.0,
+                   fk_output: str = _OUTPUTS[0]):
+    if v_pass <= v_reject:
+        raise ValueError(f"the pass velocity ({v_pass:g}) must be above the reject velocity ({v_reject:g})")
+    g = state.gather
+    out, shown, note = noise.fk_filter(g, v_reject, v_pass, fk_f_max, spectra=not state.batch)
+    data = out if fk_output == _OUTPUTS[0] else (g.data - out).astype(g.data.dtype)
+    figs = None
+    if shown is not None:
+        f_lim = min(fk_f_max * 2 if fk_f_max > 0 else 100.0, 500.0 / g.dt_ms)
+        figs = [figure("F-K spectrum", noise.plot_fk(shown, v_reject, v_pass, f_lim))]
+    return replace(_with_data(state, data), figs=figs), note + ("" if fk_output == _OUTPUTS[0] else " · showing the removed noise")
+
+
+_RADON = ["Linear (ground roll)", "Parabolic (multiples)"]
+
+
+@step("Radon Filter", "Least-squares Radon transform: Linear (tau-p) removes ground roll / slow linear noise, also when "
+      "it is spatially aliased; Parabolic removes multiples (after NMO with a velocity function they keep a residual "
+      "moveout). The noise is modelled and subtracted, the rest of the data is left as it was.",
+      params=[Param("radon_type", "Radon type", "choice", _RADON[0], choices=_RADON, group="Radon",
+                    help="Linear: ground roll and linear noise (t = offset / velocity). Parabolic: multiples"),
+              Param("radon_output", "Output", "choice", _OUTPUTS[0], choices=_OUTPUTS, group="Radon",
+                    help="Removed noise = the modelled noise that is subtracted - to check that no primary energy is removed"),
+              Param("v_cut", "Remove events slower than (length unit per s)", "float", 3000.0, min=100, step=100,
+                    group="Linear Radon", show_if={"radon_type": _RADON[0]},
+                    help="Ground roll / slow noise travel slower than this; reflections are faster and kept"),
+              Param("v_min", "Slowest velocity modelled (length unit per s)", "float", 1000.0, min=100, step=100,
+                    group="Linear Radon", show_if={"radon_type": _RADON[0]},
+                    help="Must be below the slowest noise. Lower = more time padding = slower"),
+              Param("lin_f_max", "Highest frequency, Hz", "float", 30.0, min=1, step=5, group="Linear Radon",
+                    show_if={"radon_type": _RADON[0]}, help="Ground roll is low-frequency: above this nothing is removed"),
+              Param("radon_vel", "Primary velocity function  (table: time ms, Vrms per row)", "table", nmo.DEFAULT_VELFN,
+                    group="Parabolic Radon", show_if={"radon_type": _RADON[1]},
+                    help="RMS velocity of the PRIMARIES: NMO with it flattens them, the multiples (slower) stay curved"),
+              Param("q_min_ms", "Smallest moveout modelled, ms", "float", -100.0, step=10, group="Parabolic Radon",
+                    show_if={"radon_type": _RADON[1]}, help="Moveout at the farthest offset after NMO (negative = over-corrected)"),
+              Param("q_max_ms", "Largest moveout modelled, ms", "float", 600.0, step=10, group="Parabolic Radon",
+                    show_if={"radon_type": _RADON[1]}),
+              Param("q_cut_ms", "Remove moveout above, ms", "float", 40.0, step=5, group="Parabolic Radon",
+                    show_if={"radon_type": _RADON[1]},
+                    help="Primaries are flat (about 0 ms) after NMO; events with more moveout than this at the far "
+                         "offset are taken as multiples and removed"),
+              Param("par_f_max", "Highest frequency, Hz", "float", 80.0, min=1, step=5, group="Parabolic Radon",
+                    show_if={"radon_type": _RADON[1]}),
+              Param("n_p", "Number of slownesses / moveouts", "int", 150, min=20, max=500, step=10, group="Radon",
+                    help="More = finer separation, slower"),
+              Param("damping_pct", "Damping (pre-whitening), %", "float", 1.0, min=0.01, step=0.5, group="Radon",
+                    help="Stabilises the least-squares inversion; more = smoother, less sharp Radon panel")],
+      order=38)
+def radon_step(state: PipeState, radon_type: str = _RADON[0], radon_output: str = _OUTPUTS[0], v_cut: float = 3000.0,
+               v_min: float = 1000.0, lin_f_max: float = 30.0, radon_vel=None, q_min_ms: float = -100.0,
+               q_max_ms: float = 600.0, q_cut_ms: float = 40.0, par_f_max: float = 80.0, n_p: int = 150,
+               damping_pct: float = 1.0):
+    g = state.gather
+    if radon_type == _RADON[0]:
+        if not v_min < v_cut:
+            raise ValueError(f"the slowest velocity modelled ({v_min:g}) must be below the cut ({v_cut:g})")
+        clean, removed, panel, note = noise.radon_linear(g, v_cut, v_min, n_p, lin_f_max, damping_pct)
+        kind = "linear"
+    else:
+        if not q_min_ms < q_cut_ms < q_max_ms:
+            raise ValueError("the moveouts must be: smallest < remove above < largest")
+        vel, _ = nmo.velocity_function(radon_vel if radon_vel is not None else nmo.DEFAULT_VELFN,
+                                       np.arange(g.ns) * (g.dt_ms / 1000.0))
+        clean, removed, panel, note = noise.radon_parabolic(g, vel, q_min_ms, q_max_ms, q_cut_ms, n_p, par_f_max,
+                                                            damping_pct)
+        kind = "parabolic"
+    data = clean if radon_output == _OUTPUTS[0] else removed
+    figs = None if state.batch else [figure("Radon panel", noise.plot_radon(*panel, g.dt_ms, kind))]
+    return replace(_with_data(state, data), figs=figs), note + ("" if radon_output == _OUTPUTS[0] else " · showing the removed noise")
 
 
 # ---------------------------------------------------------------------------

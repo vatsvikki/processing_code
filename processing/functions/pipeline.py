@@ -41,6 +41,8 @@ class PipeState:
     view_extra: list | None = None           # a "display" step's own Outputs (a map, not a gather) to show for this
                                              # stage instead of the usual gather + spectrum figures; reset to None
                                              # before every step runs, so it only applies to the step that set it
+    figs: list | None = None                 # extra figures of a processing step (F-K spectrum, Radon panel) shown below
+                                             # the gather for this stage; reset before every step like view_extra
 
     @classmethod
     def initial(cls, gather: ShotGather, path: str = "", batch: bool = False) -> "PipeState":
@@ -115,7 +117,7 @@ def run_steps(gather: ShotGather, specs: list[dict], path: str = "", batch: bool
         st = get_step(spec["step"])
         t0 = time.perf_counter()
         try:
-            new_state, note = st.run(replace(stages[-1].state, view_extra=None), **_params_for(st, spec.get("params")))
+            new_state, note = st.run(replace(stages[-1].state, view_extra=None, figs=None), **_params_for(st, spec.get("params")))
         except Exception as e:
             raise type(e)(f"step {i} ({st.label}): {e}") from e
         prev = stages[-1].state

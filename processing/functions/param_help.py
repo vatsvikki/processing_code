@@ -316,6 +316,55 @@ independently for every trace:
   choice, keeps the display comparable to the input). Off: the raw prediction-error-filter output is shown, whose
   amplitude can be much lower than the input (decon whitens the spectrum, which usually lowers total energy).
 """,
+    "fk_filter_step": r"""
+**What it does.** Removes ground roll and other slow, linear noise with a velocity fan in the frequency-wavenumber
+(F-K) domain. Each receiver line of the shot is filtered on its own: its traces are put at their position along the
+line (from the receiver X / Y, scaled to the header offset) on a regular grid (gaps stay empty), and
+
+$$
+D(f, k) = \iint d(t, x)\, e^{-2\pi i (f t - k x)}\, dt\, dx, \qquad v_{app} = \left|\frac{f}{k}\right|
+$$
+
+An event that moves out with velocity $v$ maps to the line $f = v\,|k|$. The pass weight is 0 below the reject
+velocity, 1 above the pass velocity and a cosine taper between (no sharp edge, no ringing); frequencies above
+*Filter only below* are left untouched. The filtered line is transformed back and every trace taken from its grid
+column.
+
+**Parameters.** *Reject below* - set just above the fastest noise (ground roll is typically 1000-3000 ft/s). *Pass above*
+- everything faster is fully kept; reflections have far higher apparent velocities. *Output: Removed noise* shows
+what is taken away: it should hold no reflections.
+
+**Limits.** F-K needs the noise to be sampled finely enough: slow ground roll is aliased above
+$f = v / (2\,\Delta x)$ (e.g. 1500 ft/s on 278 ft spacing: above 2.7 Hz) and the aliased part folds into the pass
+zone. Then use **Radon Filter (Linear)**, which copes better with aliasing. The F-K spectrum (before / after, with the
+two velocity lines) of the longest line is shown below the gather.
+""",
+    "radon_step": r"""
+**What it does.** A least-squares (Hampson) Radon transform models the data as a sum of events along curves
+$t = \tau + p\,\phi(x)$; the noise part of that model is turned back into traces and **subtracted**, so the rest of
+the data is unchanged. For every frequency the model is the damped least-squares solution
+
+$$
+m = (L^H L + \mu I)^{-1} L^H d, \qquad L_{x,p} = e^{-2\pi i f p\, \phi(x)}
+$$
+
+with $\mu$ = *Damping* % of the mean diagonal of $L^H L$.
+
+- **Linear (ground roll):** $\phi(x) = |x|$ (offset), $p$ = slowness from 0 to $1 / v_{min}$. Events slower than
+  *Remove events slower than* ($p > 1 / v_{cut}$) are removed, below *Highest frequency* only. Works in offset, so it
+  needs no regular trace spacing and handles aliased ground roll much better than F-K.
+- **Parabolic (multiples):** the gather is first NMO-corrected with the *primary velocity function*; primaries become
+  flat, multiples (slower) keep a residual moveout $q$ at the far offset: $\phi(x) = (x / x_{max})^2$. Moveouts above
+  *Remove moveout above* are modelled, taken back to recording time (inverse NMO) and subtracted.
+
+**Parameters.** *Number of slownesses / moveouts* - finer separation, but slower. *Damping* - more = smoother panel,
+less sharp separation. *Output: Removed noise* shows the subtracted noise - it should hold no primaries.
+
+**Notes.** On a shot gather the parabolic version assumes roughly flat layers (a shot gather then looks like a CMP
+gather); multiples close to the primary moveout (small $q$) cannot be separated. A linear Radon of a long record is
+padded in time by the largest shift ($x_{max} / v_{min}$), so a lower *Slowest velocity* costs time (about 2 s per
+shot on this survey). The Radon panel with the cut line is shown below the gather.
+""",
     "bandpass_filter": r"""
 **What it does.** A zero-phase trapezoidal (Ormsby) band-pass, applied in the frequency domain so it introduces no
 time shift. The frequency response is built from the four corner frequencies:

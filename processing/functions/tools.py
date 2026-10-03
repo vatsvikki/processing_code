@@ -141,6 +141,7 @@ def _flow_outputs(path: str, stages, k: int, kw: dict, flow: list[dict]):
         if k > 0:
             out.append(figure(f"Spectrum and autocorrelation - {st.label} vs input", plotting.plot_spectrum_acorr(
                 stages[0].state.gather.data, g.data, g.dt_ms, ("input", st.label))))
+        out += state.figs or []                                # a step's own QC figures (F-K spectrum, Radon panel)
     notes = [f"{s.label}: {s.note}" for s in stages[1:k + 1]]
     out.append(data(f"Processed data - {st.label}", ProcessedShot(path, g, state.src, st.label, notes, flow=flow[:k])))
     return out
