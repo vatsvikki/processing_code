@@ -284,7 +284,8 @@ def plot_fk(shown, f_lim: float, which: str = "before", fan=None, poly=None, mir
     ref = float(before.max()) or 1.0
     fig = Figure(figsize=figsize, facecolor="white")
     sel = f <= f_lim
-    ax = fig.add_axes([0.06, 0.10, 0.86, 0.78])
+    top = 0.78 if figsize[0] >= 10 else 0.73            # (a narrow plot has a two-line title)
+    ax = fig.add_axes([0.08, 0.10, 0.84, top])
     im = ax.imshow(20 * np.log10(np.maximum(amp[sel] / ref, 1e-4)), aspect="auto", origin="lower", cmap="viridis",
                    vmin=-60, vmax=0, extent=[k[0] * 1000, k[-1] * 1000, f[sel][0], f[sel][-1]])
     if fan is not None:
@@ -306,7 +307,7 @@ def plot_fk(shown, f_lim: float, which: str = "before", fan=None, poly=None, mir
     ax.set_xlabel("Wavenumber k (cycles per 1000 length units)", color=INK_2)
     ax.set_ylabel("Frequency f (Hz)", color=INK_2)
     ax.tick_params(labelsize=9, colors=INK_2)
-    cax = fig.add_axes([0.935, 0.10, 0.012, 0.78])
+    cax = fig.add_axes([0.935, 0.10, 0.012, top])
     fig.colorbar(im, cax=cax).set_label("dB re input peak", color=INK_2)
     what = {"before": "BEFORE the filter", "after": "AFTER the filter", "removed": "REMOVED noise"}[which]
     title = (f"F-K spectrum {what} - longest receiver line ({n} traces, spacing {dx:g}) - {zone}" if figsize[0] >= 10
