@@ -1,0 +1,50 @@
+/* Page layout for app_marimo.py: full window width, the top bar stays put and only the two panels below it scroll. */
+
+/* marimo pads the page (an empty 29 px spacer on top, 86 px left / right, 43-96 px at the bottom) and every output
+   (14 px on the sides, 14 px above and below): use the whole window */
+#App > div:first-child:empty { display: none; }
+#App > div { padding: 0 !important; }
+#App > div > div { padding-bottom: 0 !important; }
+.output-area { padding-left: 0 !important; padding-right: 0 !important; }
+#App .output-area .output { margin-top: 0 !important; margin-bottom: 0 !important; }
+
+.qc-root {
+  height: 100vh; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px;
+  padding: 8px 10px; overflow: hidden;
+}
+
+/* top: the title strip, and below it the function panel (one button per class of functions).  Never scrolls. */
+.qc-top { position: relative; z-index: 30; flex: none; display: flex; flex-direction: column; gap: 8px; }
+.qc-strip {
+  background: linear-gradient(100deg, #0d3550 0%, #17607f 100%); color: #fff; border-radius: 12px;
+  padding: 8px 56px 8px 20px; display: flex; align-items: center;
+}
+.qc-title { font-size: 1.45rem; font-weight: 700; letter-spacing: .01em; white-space: nowrap; }
+.qc-funcs {
+  display: flex; align-items: center; gap: 6px 22px; flex-wrap: wrap; padding: 6px 12px; border-radius: 10px;
+  border: 1px solid rgba(128, 128, 128, .28); background: rgba(128, 128, 128, .06);
+}
+.qc-active { margin-left: auto; opacity: .8; font-size: .92rem; white-space: nowrap; }
+
+/* the functions of the opened class drop down over the panels: a solid, opaque card so nothing shows through */
+.qc-pop {
+  position: absolute; left: 12px; top: calc(100% + 6px); min-width: 430px; max-width: min(760px, calc(100vw - 40px));
+  background-color: #ffffff; color: #111111; opacity: 1;
+  border: 1px solid #b9bcc2; border-radius: 10px; padding: 10px 12px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .3);
+}
+.dark .qc-pop { background-color: #1f2328; color: #eceff4; border-color: #4b5058; }
+
+/* the two panels: each has its own scroll bar */
+.qc-panels {
+  flex: 1; min-height: 0; display: grid; gap: 12px;
+  grid-template-columns: minmax(360px, 30%) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+}
+.qc-scroll {
+  min-width: 0; height: 100%; overflow-y: auto; overflow-x: hidden; padding-right: 8px; box-sizing: border-box;
+  scrollbar-gutter: stable; overscroll-behavior: contain;
+}
+
+/* the (i) marker next to an input's label: hover for the full explanation (native tooltip, never clipped) */
+.qc-i { display: inline-block; margin-left: 4px; cursor: help; color: #17607f; font-weight: 700; line-height: 1; user-select: none; }
+.qc-i:hover { color: #e34948; }

@@ -1,0 +1,7 @@
+marimo
+numpy
+pandas
+plotly
+kaleido
+matplotlib
+scipy

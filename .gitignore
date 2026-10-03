@@ -1,0 +1,27 @@
+# ---- environments, caches, editor files
+.venv/
+__pycache__/
+*.pyc
+__marimo__/
+.DS_Store
+.env
+
+# ---- results and large files (never in git: they stay on disk / on the server)
+processing/output/
+processing/notebooks/qc_plots/
+indvidual_codes/qc_plots*/
+indvidual_codes/suximage_plots/
+*.sgy
+*.segy
+*.su
+*.png
+*.log
+*.npz
+*.part
+indvidual_codes/Miniconda3-*.sh
+indvidual_codes/*.json
+!indvidual_codes/ilxl_corner_table.json
+processing/notebooks/ilxl_corner_table.json
+
+# ---- third-party clone (github.com/trustimaging/stride)
+processing/stride/
