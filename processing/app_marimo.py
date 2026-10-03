@@ -785,7 +785,10 @@ def _(html, mo):
 
 @app.cell
 def _(Path, coerce, ctx, default_for, ffid_slider, form, func, grid_rev, last, live, live_display, loaded, mo, not_loaded, path_input, show_progress,
-       pipe_mem, pipe_params, pipe_slots, pipe_steps, pipe_view, plot_tag, render, run_version, start_whole):
+       pipe_mem, pipe_params, pipe_slots, pipe_steps, pipe_view, plot_tag, render, run_version, start_whole,
+       fk_model):
+    from functions.noise import polygon_rows
+    from functions.steps import FK_MODES
     # ---- RIGHT: run the selected function, show its outputs ----------------
     run_version()  # (runs again after a ▶ of the flow)
     grid_rev  # (runs again when the survey grid of the Data card changes)
@@ -803,7 +806,7 @@ def _(Path, coerce, ctx, default_for, ffid_slider, form, func, grid_rev, last, l
         _form_vals = form.value if form.value is not None else (form.element.value if func.autorun else None)
 
     last.clear()
-    zoom_select, right_top, fk_select = None, None, None
+    zoom_select, right_top = None, None
     if func.kind == "loader":
         # Load Data: what the last load produced (the work itself is done by the loader cell, with its progress bar)
         if loaded["error"]:
@@ -872,23 +875,19 @@ def _(Path, coerce, ctx, default_for, ffid_slider, form, func, grid_rev, last, l
             for _o in _outs:
                 if _o.kind == "data":                  # processed data: only offered by the Save data button
                     continue
-                if _o.kind == "image" and _o.pick == "fk" and _o.figure is not None and fk_select is None:
-                    # the F-K Filter's F-K domain: a box / lasso drawn on it becomes the reject polygon (FK PICK cell)
-                    _o.figure.set_dpi(90)
-                    fk_select = mo.ui.matplotlib(_o.figure.axes[0], debounce=True)
-                    last["fk_slot"] = _extra.get("view", 0) - 1        # the flow place of the F-K Filter shown
-                    # side by side with the gather filtered with this zone: draw -> it is applied on release
-                    _live = next((_q for _q in _outs if _q.kind == "image" and _q.pick == "fk_live"), None)
-                    _half = {"flex": "1 1 0", "min-width": "0"}
-                    _blocks.append(mo.hstack(
-                        [mo.vstack([mo.md(f"#### {_o.title}"), fk_select], gap=0.3).style(_half)]
-                        + ([mo.vstack([mo.md(f"#### {_live.title}"),
-                                       mo.image(_live.content, style={"width": "100%", "height": "auto"})],
-                                      gap=0.3).style(_half)] if _live is not None else []),
-                        gap=1, align="start", widths="equal"))
+                if _o.kind == "image" and _o.pick == "fk" and _o.figure is not None:
+                    # the F-K Filter's F-K domain goes into the polygon editor (fk_editor.py), shown with the gather
+                    # filtered by the current zone next to it (layout cell); edits re-run the filter (FK PICK cell)
+                    _slot = _extra.get("view", 0) - 1
+                    _p = dict((pipe_params.value or {}).get(str(_slot)) or {})
+                    _manual = _p.get("fk_mode") == FK_MODES[1]
+                    fk_model.show(_o.content, _o.figure, polygon_rows(_p.get("fk_polygon")) if _manual else [],
+                                  _p.get("fk_mirror", True))
+                    last.update(fk_slot=_slot, fk_show=True,
+                                fk_live=next((_q for _q in _outs if _q.kind == "image" and _q.pick == "fk_live"), None))
                     continue
                 if _o.kind == "image" and _o.pick == "fk_live":
-                    continue                                        # (drawn next to the F-K domain above)
+                    continue                                        # (drawn next to the polygon editor)
                 if _o.kind == "image" and _o.zoom and _o.figure is not None and zoom_select is None:
                     # the gather: drag a box on it to zoom (x = trace position, y = time in ms)
                     _o.figure.set_dpi(90)          # on-screen size only; saved figures use their own dpi
@@ -902,38 +901,38 @@ def _(Path, coerce, ctx, default_for, ffid_slider, form, func, grid_rev, last, l
             right = mo.vstack(_blocks, gap=1.5).style({"min-width": "0", "max-width": "100%"})
         except Exception as _e:  # show the problem instead of a stack trace
             right = mo.callout(mo.md(f"**{type(_e).__name__}:** {_e}"), kind="danger")
-    return fk_select, right, right_top, zoom_select
+    return right, right_top, zoom_select
 
 
 @app.cell
-def _(fk_select, last, pipe_mem, set_pipe_version, set_run_version, set_save_msg):
-    # ---- FK PICK: a box or lasso drawn on the F-K domain plot becomes the F-K Filter's reject polygon ----
-    # (its corners go into the function's polygon table, the reject zone switches to "Manual polygon"; ▶ applies it)
+def _(mo):
+    # ---- the F-K Filter's polygon editor (fk_editor.py): one instance for the session; the RIGHT cell puts each new
+    # F-K plot into it (fk_model), the layout cell shows it (fk_editor), the FK PICK cell applies the edits
+    from fk_editor import FkEditor
+    fk_model = FkEditor()
+    fk_editor = mo.ui.anywidget(fk_model)
+    return fk_editor, fk_model
+
+
+@app.cell
+def _(fk_editor, last, pipe_mem, set_pipe_version, set_run_version):
+    # ---- FK PICK: every edit made in the polygon editor (point added / moved / deleted, polygon removed) becomes the
+    # F-K Filter's reject zone and is applied at once (the gather beside the editor shows the result)
     from functions.noise import F_COL as _F_COL, K_COL as _K_COL, Z_COL as _Z_COL
     from functions.steps import FK_MODES as _FK_MODES
-    _sel = fk_select.value if fk_select is not None else None
+    _v = fk_editor.value or {}
     _slot = last.get("fk_slot")
-    if _sel and _slot is not None and _slot >= 0:
-        if hasattr(_sel, "x_min"):
-            _pts = [(_sel.x_min, _sel.y_min), (_sel.x_max, _sel.y_min), (_sel.x_max, _sel.y_max), (_sel.x_min, _sel.y_max)]
-        else:
-            _pts = [(float(_v[0]), float(_v[1])) for _v in _sel.vertices]
-        _ks, _fs = [_p[0] for _p in _pts], [_p[1] for _p in _pts]
-        if len(_pts) >= 3 and max(_ks) - min(_ks) > 1e-3 and max(_fs) - min(_fs) > 0.2:     # not a plain click
-            _key = (_slot, "fk_filter_step")
-            _old = pipe_mem["params"].get(_key, {})
-            _rows = list(_old.get("fk_polygon") or []) if (_old.get("fk_add") and _old.get("fk_mode") == _FK_MODES[1]) else []
-            _zone = max([int(float(_r.get(_Z_COL) or 1)) for _r in _rows] or [0]) + 1
-            _rows += [{_Z_COL: _zone, _K_COL: round(_k, 4), _F_COL: round(max(_f, 0.0), 2)} for _k, _f in _pts]
-            pipe_mem["params"][_key] = {**_old, "fk_mode": _FK_MODES[1], "fk_polygon": _rows}
-            # applied at once: run the flow up to the F-K Filter again (the gather beside the F-K plot shows the result)
-            _labels = pipe_mem["slots"]
-            if _slot < len(_labels):
-                pipe_mem["run_to"] = _slot + 1
-                pipe_mem["view"] = f"{_slot + 1}. {_labels[_slot]}"
-            set_save_msg(f"F-K reject zone {_zone} ({len(_pts)} corners) taken from your drawing and applied.")
-            set_pipe_version(lambda n: n + 1)
-            set_run_version(lambda n: n + 1)
+    if _v.get("rev", 0) != pipe_mem.get("fk_rev") and _slot is not None and _slot >= 0:
+        pipe_mem["fk_rev"] = _v.get("rev", 0)                  # (a new plot put in by Python does not count)
+        _rows = [{_Z_COL: _z, _K_COL: _k, _F_COL: _f}
+                 for _z, _poly in enumerate(_v.get("polys") or [], 1) for _k, _f in _poly]
+        _key = (_slot, "fk_filter_step")
+        pipe_mem["params"][_key] = {**pipe_mem["params"].get(_key, {}), "fk_mode": _FK_MODES[1], "fk_polygon": _rows}
+        if _slot < len(pipe_mem["slots"]):
+            pipe_mem["run_to"] = _slot + 1
+            pipe_mem["view"] = f"{_slot + 1}. {pipe_mem['slots'][_slot]}"
+        set_pipe_version(lambda n: n + 1)
+        set_run_version(lambda n: n + 1)
     return
 
 
@@ -1263,7 +1262,7 @@ def _(WIDGET_INFO, batch_cancel, job_refresh, job_version, jobs, mo, os, set_job
 
 @app.cell
 def _(FUNCTION_INFO, Path, batch_fmt, batch_from, batch_out, batch_to, ctx, ctx_error, job_version, jobs,
-       exists_cancel, exists_overwrite, exists_rename,
+       exists_cancel, exists_overwrite, exists_rename, fk_editor,
        whole_status,
        grid_msg, grid_reset, survey_grid,
        estimate_batch, ffid_slider, flow_add, flow_toggle, form, func, last, live, live_display, load_button,
@@ -1422,6 +1421,17 @@ def _(FUNCTION_INFO, Path, batch_fmt, batch_from, batch_out, batch_to, ctx, ctx_
                 gap=0.5,
             ).style(_card)
         )
+    if last.get("fk_show"):
+        # the F-K Filter's polygon editor with the shot gather filtered by the current reject zone beside it
+        _live = last.get("fk_live")
+        _half = {"flex": "1 1 0", "min-width": "0"}
+        _parts.append(mo.hstack(
+            [mo.vstack([mo.md("#### F-K domain - click to add points, drag them to change the shape"), fk_editor],
+                       gap=0.3).style(_half)]
+            + ([mo.vstack([mo.md(f"#### {_live.title}"),
+                           mo.image(_live.content, style={"width": "100%", "height": "auto"})], gap=0.3).style(_half)]
+               if _live is not None else []),
+            gap=1, align="start", widths="equal").style(_card))
     _parts.append(mo.vstack([right], gap=0).style({**_card, "background": "transparent", "border": "none", "padding": "0"}))
     if _save_card is not None:
         _parts.append(_save_card)

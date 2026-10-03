@@ -4,3 +4,4 @@ matplotlib>=3.7
 plotly>=5
 kaleido
 scipy
+anywidget
