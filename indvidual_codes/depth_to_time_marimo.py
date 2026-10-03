@@ -9,7 +9,8 @@ def _(mo):
     mo.md("""
     # Depth image → time image
 
-    **1.** Input file, input parameters & corner points &nbsp;→&nbsp; **2.** Velocity for the conversion &nbsp;→&nbsp;
+    **1.** Input file, input parameters & corner points &nbsp;→&nbsp; **2.** Velocity file (or a constant / a
+    velocity function) with its parameters & corner points &nbsp;→&nbsp;
     **3.** Output parameters &nbsp;→&nbsp; **4.** Plot depth and time &nbsp;→&nbsp; **5.** Convert and write.
 
     Every depth sample goes to its two-way time **t = 2 ∫ dz / V(z)**, so the conversion needs a velocity - give a
@@ -454,10 +455,12 @@ def _(corner_rows_of, corner_table, fit_affine, ilxl_to_xy, img_ilv, img_xlv, mo
 @app.cell(hide_code=True)
 def _(S, VEL_UNITS, in_len, mo):
     # ---- 2. velocity ------------------------------------------------------------------------------------------------
-    VSOURCES = ["Constant velocity", "Velocity function: depth - interval velocity",
-                "Velocity function: time (TWT ms) - RMS velocity", "Velocity model SEG-Y (same inline / crossline)"]
-    vsource = mo.ui.dropdown(VSOURCES, value=S.get("vsource", VSOURCES[1]) if S.get("vsource") in VSOURCES
-                             else VSOURCES[1], label="Velocity for the conversion")
+    VSOURCES = ["Velocity file (SEG-Y)", "Constant velocity", "Velocity function: depth - interval velocity",
+                "Velocity function: time (TWT ms) - RMS velocity"]
+    _saved = S.get("vsource", VSOURCES[0])
+    _saved = VSOURCES[0] if str(_saved).startswith("Velocity model SEG-Y") else _saved
+    vsource = mo.ui.dropdown(VSOURCES, value=_saved if _saved in VSOURCES else VSOURCES[0],
+                             label="Velocity for the conversion")
     v_unit = mo.ui.dropdown(list(VEL_UNITS), value=S.get("v_unit", "ft/s" if in_len.value == "ft" else "m/s"),
                             label="Velocity unit")
     v_const = mo.ui.number(value=S.get("v_const", 10000.0), start=0, step=0.001, label="Velocity")
@@ -468,26 +471,84 @@ def _(S, VEL_UNITS, in_len, mo):
     _tz = [{"time": 0, "velocity": 5000}, {"time": 2000, "velocity": 7000}, {"time": 5000, "velocity": 10000},
            {"time": 8000, "velocity": 12000}]
     v_time_tab = mo.ui.data_editor(S.get("v_time_tab", _tz), label="TWT (ms) - RMS velocity (linear between rows)")
-    v_path = mo.ui.text(value=S.get("v_path", ""), label="Velocity SEG-Y (interval velocity in depth)", full_width=True)
-    v_dz = mo.ui.number(value=S.get("v_dz", 0.0), start=0, step=0.001,
-                        label=f"its depth sample interval ({in_len.value}; 0 = from its header)")
+    v_path = mo.ui.text(value=S.get("v_path", ""), label="Velocity file (SEG-Y)", full_width=True)
+    v_btn = mo.ui.run_button(label="📂 Load velocity file")
     mo.vstack([mo.md("## 2. Velocity for the conversion"), mo.hstack([vsource, v_unit], justify="start", gap=1)])
-    return VSOURCES, v_const, v_depth_tab, v_dz, v_path, v_time_tab, v_unit, vsource
+    return VSOURCES, v_btn, v_const, v_depth_tab, v_path, v_time_tab, v_unit, vsource
 
 
 @app.cell(hide_code=True)
-def _(VSOURCES, mo, v_const, v_depth_tab, v_dz, v_path, v_time_tab, vsource):
+def _(BELOW, DOMAINS, S, TYPES, VSOURCES, corners_from_text, in_len, mo, re, segy_open, v_btn, v_path, vsource):
+    # the velocity file and its parameters (asked only when the velocity comes from a file)
+    vel_file, vel_err = None, ""
+    if vsource.value == VSOURCES[0] and v_path.value.strip():
+        try:
+            vel_file = segy_open(v_path.value)
+        except Exception as _e:
+            vel_err = f"{type(_e).__name__}: {_e}"
+    _lines = vel_file["lines"] if vel_file else []
+    _txt = " ".join(_lines).upper()
+    _dom = DOMAINS[0] if re.search(r"\bTIME\b|\bMS\b", _txt) and not re.search(r"\bDEPTH\b|\bFT\b|\bFEET\b", _txt) \
+        else DOMAINS[1]
+    _typ = "RMS" if "RMS" in _txt else ("Average" if "AVERAGE" in _txt else "Interval")
+    _s = S.get("vfile", {}) if S.get("v_path") == v_path.value else {}
+    v_type = mo.ui.dropdown(TYPES, value=_s.get("type", _typ), label="Velocity type")
+    v_domain = mo.ui.dropdown(DOMAINS, value=_s.get("domain", _dom), label="Vertical domain")
+    v_dz = mo.ui.number(value=_s.get("dz", (vel_file["dt"] / 1000.0) if vel_file else 0.0), start=0, step=0.001,
+                        label="Sample interval (ms for time / depth unit)")
+    v_z0 = mo.ui.number(value=_s.get("z0", 0.0), step=0.001, label="First sample at")
+    v_len = mo.ui.dropdown(["ft", "m"], value=_s.get("len", in_len.value), label="Depth unit")
+    v_il = mo.ui.number(value=_s.get("il", 189), start=1, stop=237, label="Inline byte")
+    v_xl = mo.ui.number(value=_s.get("xl", 193), start=1, stop=237, label="Crossline byte")
+    VMATCH = ["Corner points (image IL/XL -> X/Y -> velocity IL/XL)", "Same inline / crossline numbers"]
+    v_match = mo.ui.dropdown(VMATCH, value=_s.get("match", VMATCH[0]), label="Match image and velocity traces by")
+    v_below = mo.ui.dropdown(BELOW[:2], value=_s.get("below", BELOW[0]) if _s.get("below") in BELOW[:2] else BELOW[0],
+                             label="Below the velocity file's last sample")
+    v_grad = mo.ui.number(value=_s.get("grad", 1000.0), start=0, step=0.001,
+                          label="(gradient taken over the last ... depth units)")
+    _text = corners_from_text(_lines)
+    v_corner_table = mo.ui.data_editor(
+        _s.get("corners") or [{"IL": r[0], "XL": r[1], "X": r[2], "Y": r[3]} for r in _text]
+        or [{"IL": "", "XL": "", "X": "", "Y": ""}] * 4, label="Velocity file corner points (IL, XL ↔ X, Y)")
+    v_corner_src = "read from its text header - check them" if _text and not _s.get("corners") else (
+        "saved" if _s.get("corners") else "type them")
+    return VMATCH, v_below, v_corner_src, v_corner_table, v_domain, v_dz, v_grad, v_il, v_len, v_match, v_type, v_xl, \
+        v_z0, vel_err, vel_file
+
+
+@app.cell(hide_code=True)
+def _(VSOURCES, mo, v_below, v_btn, v_const, v_corner_src, v_corner_table, v_depth_tab, v_domain, v_dz, v_grad, v_il,
+      v_len, v_match, v_path, v_time_tab, v_type, v_xl, v_z0, vel_err, vel_file, vsource):
     # only the inputs of the chosen velocity
-    {VSOURCES[0]: v_const, VSOURCES[1]: v_depth_tab, VSOURCES[2]: v_time_tab,
-     VSOURCES[3]: mo.vstack([v_path, v_dz, mo.md("<span style='opacity:.7'>Below its last sample the last velocity "
-                                                  "is held.</span>")])}[vsource.value]
+    if vsource.value == VSOURCES[0]:
+        _info = []
+        if vel_err:
+            _info.append(mo.callout(mo.md(f"**Could not read the velocity file** - {vel_err}"), kind="danger"))
+        elif vel_file is not None:
+            _what = next((l[3:].strip() for l in vel_file["lines"] if "DESCRIPTION" in l.upper()), "")
+            _info += [mo.md(f"**{vel_file['ntr']:,} traces**, {vel_file['ns']} samples, sample-interval field "
+                            f"{vel_file['dt']}" + (f" · *{_what}*" if _what else "")),
+                      mo.accordion({"Velocity file text header": mo.md(
+                          "```\n" + "\n".join(l.rstrip() for l in vel_file["lines"]) + "\n```")}),
+                      mo.md("**Velocity file parameters** (guessed from its header - check them)"),
+                      mo.hstack([v_type, v_domain, v_dz, v_z0, v_len], justify="start", gap=1, wrap=True),
+                      mo.hstack([v_il, v_xl, v_match], justify="start", gap=1, wrap=True),
+                      mo.hstack([v_below, v_grad], justify="start", gap=1, wrap=True),
+                      mo.md(f"**Velocity file corner points** ({v_corner_src})"), v_corner_table]
+        else:
+            _info.append(mo.md("_Type the velocity file path and press **Load velocity file**._"))
+        _out = mo.vstack([v_path, v_btn] + _info)
+    else:
+        _out = {VSOURCES[1]: v_const, VSOURCES[2]: v_depth_tab, VSOURCES[3]: v_time_tab}[vsource.value]
+    _out
     return
 
 
 @app.cell(hide_code=True)
-def _(BELOW, DOMAINS, LEN_UNITS, VEL_UNITS, VSOURCES, depth_m, header_word, img_ilv, img_xlv, in_len, mo, np, records,
-      samples_of, segy_open, time_at_depths, to_interval, v_const, v_depth_tab, v_dz, v_path, v_time_tab, v_unit,
-      vsource):
+def _(DOMAINS, LEN_UNITS, VEL_UNITS, VMATCH, VSOURCES, corner_fit, corner_rows_of, depth_m, fit_affine, header_word,
+      ilxl_to_xy, img_ilv, img_xlv, in_len, mo, np, records, samples_of, time_at_depths, to_interval, v_below, v_const,
+      v_corner_table, v_depth_tab, v_domain, v_dz, v_grad, v_il, v_len, v_match, v_time_tab, v_type, v_unit, v_xl, v_z0,
+      vel_file, vsource, xy_to_ilxl):
     # TWT (s) at every depth sample, for a set of image traces: twt_for(trace_indices) -> [n, ns]
     def _rows(tab, a, b):
         rows = tab.value.to_dict("records") if hasattr(tab.value, "to_dict") else list(tab.value or [])
@@ -500,13 +561,13 @@ def _(BELOW, DOMAINS, LEN_UNITS, VEL_UNITS, VSOURCES, depth_m, header_word, img_
         return np.array(sorted(out)) if out else np.zeros((0, 2))
 
     vu = VEL_UNITS[v_unit.value]
-    vmsg, twt_one, vel_file = "", None, None
-    if vsource.value == VSOURCES[0]:
+    vmsg, twt_one, vel_near, vel_axis_si = "", None, None, None
+    if vsource.value == VSOURCES[1]:
         _v = float(v_const.value) * vu
         mo.stop(_v <= 0, mo.callout(mo.md("The velocity must be > 0."), kind="danger"))
         twt_one = 2 * depth_m / _v
         vmsg = f"constant {float(v_const.value):g} {v_unit.value}"
-    elif vsource.value == VSOURCES[1]:
+    elif vsource.value == VSOURCES[2]:
         _t = _rows(v_depth_tab, "depth", "velocity")
         mo.stop(len(_t) < 1 or (_t[:, 1] <= 0).any(), mo.callout(mo.md("Give at least one row, velocities > 0."),
                                                                   kind="danger"))
@@ -515,44 +576,67 @@ def _(BELOW, DOMAINS, LEN_UNITS, VEL_UNITS, VSOURCES, depth_m, header_word, img_
         _tt = np.concatenate([[0.0], np.cumsum(np.diff(_z) * (1 / _v[:-1] + 1 / _v[1:]))])    # 2 * trapezoid of 1/v
         twt_one = _tt[-len(depth_m):]
         vmsg = f"depth function of {len(_t)} rows"
-    elif vsource.value == VSOURCES[2]:
+    elif vsource.value == VSOURCES[3]:
         _t = _rows(v_time_tab, "time", "velocity")
         mo.stop(len(_t) < 1 or (_t[:, 1] <= 0).any(), mo.callout(mo.md("Give at least one row, velocities > 0."),
                                                                   kind="danger"))
-        _tq = np.arange(0.0, max(_t[-1, 0], 20000.0) + 1, 2.0)                  # ms, far below the image
+        _tq = np.arange(0.0, max(_t[-1, 0], 20000.0) + 1, 2.0)
         _vr = np.interp(_tq, _t[:, 0], _t[:, 1]) * vu
         _vint, _T, _Z, _bad = to_interval(_vr[None], _tq / 1000.0, "RMS", DOMAINS[0])
         twt_one = np.interp(depth_m, _Z[0], _T[0])
-        vmsg = f"RMS function of {len(_t)} rows (Dix to interval)" + (f" - ⚠ {_bad} impossible Dix values clipped"
-                                                                      if _bad else "")
+        vmsg = f"RMS function of {len(_t)} rows (Dix to interval)"
     else:
-        mo.stop(not v_path.value.strip(), mo.callout(mo.md("Type the velocity SEG-Y path."), kind="warn"))
-        try:
-            vel_file = segy_open(v_path.value)
-        except Exception as _e:
-            mo.stop(True, mo.callout(mo.md(f"Could not read the velocity file - {_e}"), kind="danger"))
+        mo.stop(vel_file is None, mo.callout(mo.md("Load the velocity file (step 2)."), kind="warn"))
         _r = records(vel_file)
-        _vil = header_word(_r, 189, "i4", vel_file["order"])
-        _vxl = header_word(_r, 193, "i4", vel_file["order"])
-        _look = {(int(a), int(b)): k for k, (a, b) in enumerate(zip(_vil, _vxl))}
+        _pick = np.linspace(0, vel_file["ntr"] - 1, min(vel_file["ntr"], 200)).astype(np.int64)
+        _sv = samples_of(vel_file, _r[_pick])
+        _live = _sv[_sv != 0]
+        _neg = float((_live < 0).mean()) if _live.size else 0.0
+        mo.stop(_neg > 0.01, mo.callout(mo.md(
+            f"**This is not a velocity file** - {_neg:.0%} of its samples are negative (a velocity never is). It is "
+            "probably a seismic image. Load the velocity model."), kind="danger"))
+        _vil = header_word(_r, int(v_il.value), "i4", vel_file["order"])
+        _vxl = header_word(_r, int(v_xl.value), "i4", vel_file["order"])
         from scipy.spatial import cKDTree as _KD
-        _, _near = _KD(np.column_stack([_vil, _vxl]).astype(float)).query(np.column_stack([img_ilv, img_xlv]))
-        _vdz = float(v_dz.value) if v_dz.value else vel_file["dt"] / 1000.0
-        _vax = np.arange(vel_file["ns"]) * _vdz * LEN_UNITS[in_len.value]
-        vmsg = f"velocity SEG-Y, {vel_file['ntr']:,} traces to {_vax[-1] / LEN_UNITS[in_len.value]:,.0f} {in_len.value}"
+        if v_match.value == VMATCH[0]:
+            _vfit = fit_affine(corner_rows_of(v_corner_table.value))
+            mo.stop(corner_fit is None or _vfit is None, mo.callout(mo.md(
+                "Matching by corner points needs valid corner points for the image (step 1) and the velocity file "
+                "(step 2) - or match by the same inline / crossline numbers."), kind="danger"))
+            _x, _y = ilxl_to_xy(corner_fit, img_ilv.astype(float), img_xlv.astype(float))
+            _qi, _qx = xy_to_ilxl(_vfit, _x, _y)
+            _dist, vel_near = _KD(np.column_stack([_vil, _vxl]).astype(float)).query(np.column_stack([_qi, _qx]))
+        else:
+            _dist, vel_near = _KD(np.column_stack([_vil, _vxl]).astype(float)).query(
+                np.column_stack([img_ilv, img_xlv]).astype(float))
+        _is_t = v_domain.value == DOMAINS[0]
+        _ax = float(v_z0.value) + np.arange(vel_file["ns"]) * float(v_dz.value or vel_file["dt"] / 1000.0)
+        vel_axis_si = _ax / 1000.0 if _is_t else _ax * LEN_UNITS[v_len.value]
+        _lo, _hi = (np.percentile(_live, [1, 99]) if _live.size else (0, 0))
+        vmsg = (f"velocity file: {v_type.value} in {'time' if _is_t else 'depth'}, {_ax[0]:g} – {_ax[-1]:g} "
+                f"{'ms' if _is_t else v_len.value}, values {_lo:,.0f} – {_hi:,.0f} {v_unit.value} · "
+                f"{float((_dist < 0.5).mean()):.0%} of the image traces on a velocity trace"
+                + (" (⚠ part of the image is outside the velocity file - the nearest trace is used)"
+                   if _dist.max() > 1.5 else ""))
 
     def twt_for(idx):
         """TWT (s) at every depth sample of the image traces idx."""
         if twt_one is not None:
             return np.broadcast_to(twt_one, (len(idx), len(depth_m)))
-        v = samples_of(vel_file, records(vel_file)[_near[idx]]) * vu
-        vint, t, z, _ = to_interval(v, _vax, "Interval", DOMAINS[1])
-        return time_at_depths(t, z, vint, depth_m, BELOW[0])[0]
+        v = samples_of(vel_file, records(vel_file)[vel_near[idx]]) * vu
+        vint, t, z, _ = to_interval(v, vel_axis_si, v_type.value, v_domain.value)
+        return time_at_depths(t, z, vint, depth_m, v_below.value, float(v_grad.value) * LEN_UNITS[v_len.value])[0]
+
+    def vel_along(idx):
+        """The velocity file's values for the image traces idx (None for a constant / a typed function)."""
+        if vel_file is None or vel_near is None:
+            return None
+        return samples_of(vel_file, records(vel_file)[vel_near[idx]])
 
     _t_end = float(twt_for(np.array([len(img_ilv) // 2]))[0, -1] * 1000)
     mo.callout(mo.md(f"Velocity: **{vmsg}** · the deepest sample ({depth_m[-1] / LEN_UNITS[in_len.value]:,.0f} "
                      f"{in_len.value}) goes to **{_t_end:,.0f} ms** TWT"), kind="info")
-    return twt_for, vel_file, vmsg
+    return twt_for, vel_along, vel_axis_si, vmsg
 
 
 @app.cell(hide_code=True)
@@ -586,8 +670,9 @@ def _(img_ilv, img_xlv, mo, np, pv_kind):
 
 
 @app.cell(hide_code=True)
-def _(antialias, corner_fit, depth_axis, depth_to_time, ilxl_to_xy, img, img_ilv, img_xlv, in_len, mo, np, out_dt,
-      out_tmax, plt, pv_kind, pv_line, records, samples_of, time, twt_for):
+def _(DOMAINS, VEL_UNITS, antialias, corner_fit, depth_axis, depth_to_time, ilxl_to_xy, img, img_ilv, img_xlv, in_len,
+      mo, np, out_dt, out_tmax, plt, pv_kind, pv_line, records, samples_of, time, twt_for, v_domain, v_len, v_unit,
+      vel_along, vel_axis_si):
     _inl = pv_kind.value == "Inline"
     _sel = np.flatnonzero((img_ilv if _inl else img_xlv) == int(pv_line.value))
     mo.stop(len(_sel) == 0, mo.callout(mo.md(f"{pv_kind.value} {pv_line.value} is not in the file."), kind="warn"))
@@ -639,7 +724,20 @@ def _(antialias, corner_fit, depth_axis, depth_to_time, ilxl_to_xy, img, img_ilv
     else:
         _axs[3].axis("off")
     _fig.tight_layout()
-    mo.vstack([mo.md(f"{len(_sel)} traces converted in {_secs:.1f} s"), _fig])
+    _vel = vel_along(_sel)
+    _vfig = None
+    if _vel is not None:                                   # the velocity used along this line
+        _is_t = v_domain.value == DOMAINS[0]
+        _vax = vel_axis_si * 1000 if _is_t else vel_axis_si / (0.3048 if v_len.value == "ft" else 1.0)
+        _vfig, _va = plt.subplots(figsize=(16, 3.6))
+        _im = _va.imshow(_vel.T, aspect="auto", cmap="jet", extent=[_x0, _x1, _vax[-1], _vax[0]])
+        _va.set_title(f"Velocity file along {pv_kind.value.lower()} {pv_line.value}", fontsize=10)
+        _va.set_xlabel(_xlab, fontsize=9)
+        _va.set_ylabel("TWT (ms)" if _is_t else f"Depth ({v_len.value})", fontsize=9)
+        _va.tick_params(labelsize=8)
+        _vfig.colorbar(_im, ax=_va, fraction=0.03).set_label(v_unit.value, fontsize=8)
+        _vfig.tight_layout()
+    mo.vstack([mo.md(f"{len(_sel)} traces converted in {_secs:.1f} s"), _fig] + ([_vfig] if _vfig is not None else []))
     return
 
 
@@ -660,8 +758,9 @@ def _(Path, S, img, mo):
 @app.cell(hide_code=True)
 def _(antialias, corner_fit, corners, datetime, depth_to_time, encode_samples, ilxl_to_xy, img,
       img_ilv, img_xlv, in_dz, in_il, in_len, in_xl, in_z0, mo, np, os, out_dt, out_fmt, out_path, out_tmax, overwrite,
-      records, samples_of, save_settings, time, twt_for, v_const, v_depth_tab, v_dz, v_path, v_time_tab, v_unit,
-      vmsg, vsource, write_btn, write_xy):
+      records, samples_of, save_settings, time, twt_for, v_below, v_const, v_corner_table, v_depth_tab, v_domain,
+      v_dz, v_grad, v_il, v_len, v_match, v_path, v_time_tab, v_type, v_unit, v_xl, v_z0, vmsg, vsource, write_btn,
+      write_xy):
     mo.stop(not write_btn.value)
     _dest = os.path.abspath(os.path.expanduser(out_path.value.strip()))
     mo.stop(_dest == img["path"], mo.callout(mo.md("The output must be a new file."), kind="danger"))
@@ -676,7 +775,10 @@ def _(antialias, corner_fit, corners, datetime, depth_to_time, encode_samples, i
     save_settings(img["path"], {
         "in_len": in_len.value, "in_dz": in_dz.value, "in_z0": in_z0.value, "in_il": in_il.value, "in_xl": in_xl.value,
         "corners": _corners, "vsource": vsource.value, "v_unit": v_unit.value, "v_const": v_const.value,
-        "v_depth_tab": _tab(v_depth_tab), "v_time_tab": _tab(v_time_tab), "v_path": v_path.value, "v_dz": v_dz.value,
+        "v_depth_tab": _tab(v_depth_tab), "v_time_tab": _tab(v_time_tab), "v_path": v_path.value,
+        "vfile": {"type": v_type.value, "domain": v_domain.value, "dz": v_dz.value, "z0": v_z0.value, "len": v_len.value,
+                  "il": v_il.value, "xl": v_xl.value, "match": v_match.value, "below": v_below.value,
+                  "grad": v_grad.value, "corners": _tab(v_corner_table)},
         "out_dt": out_dt.value, "out_tmax": out_tmax.value, "out_fmt": out_fmt.value, "antialias": antialias.value,
         "out_path": out_path.value, "write_xy": write_xy.value})
     _out_t = np.arange(0.0, float(out_tmax.value) + 1e-9, float(out_dt.value)) / 1000.0
