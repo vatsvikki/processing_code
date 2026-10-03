@@ -335,13 +335,13 @@ column.
 - **Velocity fan (from the inputs)** - everything slower than *Reject below*, with a taper up to *Pass above*.
 - **Manual polygon (drawn on the F-K plot)** - after ▶, the **F-K domain** polygon editor is shown, with the shot
   gather filtered by the current zone right next to it:
-  - **click** on the plot to add a point - after 3 points the polygon closes and is applied; a click near an edge
-    inserts the point into that edge;
-  - **drag** a point to move it and change the shape; **double-click** (or right-click) a point to delete it;
-  - **＋ New polygon** starts another zone (every polygon is rejected), **🗑 Remove polygon** deletes the selected
-    (highlighted) one, **✕ Remove all** deletes them all (nothing rejected).
+  - **click** on the plot to add points - as many as you like - and **double-click** to finish the polygon (it needs
+    at least 3 points); only a finished polygon is applied. *Undo point* takes back the last point, Esc cancels;
+  - then **drag** a point to move it, **click near an edge** to insert a point there, **right-click** a point to
+    delete it; clicking an empty spot starts another polygon (every polygon is rejected);
+  - **🗑 Remove polygon** deletes the selected (highlighted) one, **✕ Remove all** deletes them all (nothing rejected).
 
-  Every finished edit is applied at once (about 1 s): the gather beside the editor and the flip-flops show the result,
+  Every finished edit (polygon closed, point moved / inserted / deleted, polygon removed) is applied at once (about 1 s): the gather beside the editor and the flip-flops show the result,
   no ▶ needed. The corners are also listed in the *Reject zone corners* table (zone number, k in cycles per 1000
   length units, f in Hz - the plot's axes; rows with the same zone = one polygon), where they can be typed too.
   *Mirror* rejects each polygon at -k as well (dashed outline; the other side of a split spread). The polygon edges
