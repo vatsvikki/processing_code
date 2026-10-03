@@ -181,9 +181,6 @@ WIDGET_INFO: dict[str, str] = {
                 "range: another range runs again from the first function.",
     "batch_fmt": "Sample format of the output file: ibm = 4-byte IBM float, ieee = 4-byte IEEE float.",
     "batch_overwrite": "Allow replacing an output file that already exists. Off = the job stops instead of overwriting.",
-    "whole_auto": "On: ▶ beside a function also runs the flow up to it on the whole data (every shot of the FFID range), in "
-                  "the background, starting from the furthest whole-data result already kept; ▶ Run flow runs all of "
-                  "it and writes the product. Off: ▶ works on the selected shot only - for trying settings.",
     "batch_button": "Runs the flow on screen on EVERY shot of the chosen range and writes its product as one SEG-Y file (a "
                     "15 GB file is never held in memory): the processed shots - or, when the flow has CDP steps, the "
                     "CDP-sorted gathers, the NMO-corrected CDP gathers or the stack (the last CDP step decides). With CDP "
@@ -193,11 +190,9 @@ WIDGET_INFO: dict[str, str] = {
     "step_run": "Run the flow up to this function now, on the selected shot, and show its result. The functions above it "
                 "that already ran with the same settings are reused (their result is kept), so only what changed is "
                 "computed. Changing a parameter never runs anything by itself - it marks this function and the ones "
-                "below it 'not run yet' until you press ▶. With '🌐 ▶ also runs on the whole data' ticked it also runs "
-                "the flow up to here on every shot of the FFID range in the background (from the furthest whole-data "
-                "result already kept); 🌐✓ beside a function = done on the whole data with these settings.",
-    "run_all": "Run every function of the flow - on the selected shot, and on the whole data whatever was not run there "
-               "yet (functions marked 🌐✓ are reused) - and write the flow's product to the output file.",
+                "below it 'not run yet' until you press ▶. Selected shot only - ▶ Run flow runs the whole data.",
+    "run_all": "Run every function of the flow on the selected shot, and the whole flow on the whole data (every shot of "
+               "the FFID range) in one pass - each shot read once, the result written once to the output file.",
     "batch_cancel": "Stops the whole-data run (press Run again to restart it). No file is written by a cancelled run (a "
                     "partial '.part' file is removed).",
     "job_dismiss": "Remove this message from the top of the page.",
@@ -599,15 +594,14 @@ zoom, figure size) only redraw. Another FFID shows its raw shot until ▶ is pre
   They must come after the processing steps.
 - **View stage** shows the gather after any function, with its spectrum / autocorrelation against the input.
 
-**Whole data.** The same **▶** also runs the flow up to that function on every shot of the FFID range, in the
-background (progress and Cancel in the card bottom right; untick *🌐 ▶ also runs on the whole data* to try settings on
-one shot only). Each function's whole-data result is kept (output/flows), and a run always starts from the furthest one
-already there - a function marked 🌐✓ is not run again, the next one starts from its result. **▶ Run flow** runs what
-is left and writes the flow's product to the output file (🌐 *Whole data* settings in the Flow card): the processed
-shots, or - when it ends with NMO Correction / CDP Stack - the NMO-corrected CDP gathers or the stack. If you forgot ▶
-on some function, ▶ Run flow does it. QC functions only mark traces: on the whole data they run together with the
-function after them (their marks are not stored). Results of earlier settings that the flow can no longer use are
-deleted (each is as big as the input). Tools that work on the whole file on their own (CDP Sort, CDP Recalculate, Shot Geometry QC) are in 🛠 Tools.
+**Whole data.** **▶ Run flow** (at the end of the Flow card) also runs the whole flow on every shot of the FFID
+range, in the background (progress and Cancel in the card bottom right), in one pass: each shot is read once, all
+functions run on it in memory, and the result is written once - to the output file set under 🌐 *Whole data* in the
+Flow card: the processed shots, or - when it ends with NMO Correction / CDP Stack - the NMO-corrected CDP gathers or
+the stack. ▶ beside a function only previews the selected shot. With NMO Correction / CDP Stack the shot functions'
+result is written once more (output/flows) - those steps need the data sorted by CDP; a later run with the same shot
+functions (e.g. only the stack settings changed) reuses it. 🌐✓ beside a function = done on the whole data with these
+settings. Results of earlier settings that the flow can no longer use are deleted (each is as big as the input). Tools that work on the whole file on their own (CDP Sort, CDP Recalculate, Shot Geometry QC) are in 🛠 Tools.
 """,
     "cdp_stack_step": r"""
 **What it does.** Stacks the CDP gathers the steps above it produced - it has no velocity, NMO, sorting or filter of

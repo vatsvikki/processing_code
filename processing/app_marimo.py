@@ -537,13 +537,14 @@ def _(FUNCTION_INFO, SimpleNamespace, WIDGET_INFO, add_open, functions, html, mo
                                     on_click=lambda _, _i=_i: _remove(_i)) for _i in range(_n)]
 
         def _run(_k):
-            # ▶: compute the flow up to stage _k now (-1 = all) and show that stage; nothing runs before a ▶ is pressed.
-            # The same ▶ starts the run of the flow up to there on the whole data (the RIGHT cell starts it, it has the
-            # parameters); the ▶ at the end runs all of it - only what was not run on the whole data yet
+            # ▶: compute the flow up to stage _k now on the selected shot and show that stage; nothing runs before a ▶
+            # is pressed. ▶ Run flow (_k = -1) also runs the whole flow on the whole data in one pass (the RIGHT cell
+            # starts it, it has the parameters): every shot read once, all functions in memory, the result written once
             _labels = [_l for _l in pipe_mem["slots"] if _l in pipe_steps]
+            if _k < 0:
+                pipe_mem["whole_to"] = len(_labels)
             _k = len(_labels) if _k < 0 else _k
             pipe_mem["run_to"] = _k
-            pipe_mem["whole_to"] = _k
             pipe_mem["view"] = f"{_k}. {_labels[_k - 1]}" if _k > 0 else "0. Input (raw)"
             set_active(_flow_key)
             set_run_version(lambda n: n + 1)
@@ -1006,10 +1007,9 @@ def _(BatchJob, DEFAULT_DIR, FORMATS, Path, SEGY_FORMATS, SimpleNamespace, WIDGE
     _abbr = {"correct_dead": "cd", "geometric_spreading": "gs", "spiking_decon": "decon", "bandpass_filter": "bp",
              "agc_gain": "agc", "top_mute": "mute"}
 
-    # ▶ beside a function of the Flow also runs the flow up to it on the whole data; the ▶ Run flow at the end runs
-    # all of it. Every run starts from the furthest whole-data result of the first steps already kept (output/flows),
-    # so only what was not run on the whole data yet is done (BatchJob / cdp_flow.best_start).
-    whole_auto = mo.ui.checkbox(value=True, label="🌐 ▶ also runs on the whole data " + tip(WIDGET_INFO["whole_auto"]))
+    # ▶ Run flow at the end of the Flow runs the whole flow on the whole data in one pass (▶ beside a function only
+    # previews the selected shot). With NMO Correction / CDP Stack the shot functions' result is kept (output/flows):
+    # the CDP steps need it CDP-sorted, and a later run with the same shot functions reuses it (BatchJob).
 
     def _target(_steps):
         # what a whole-data run of these steps does: the trailing QC / Display functions only mark or show, they
@@ -1039,7 +1039,7 @@ def _(BatchJob, DEFAULT_DIR, FORMATS, Path, SEGY_FORMATS, SimpleNamespace, WIDGE
     def start_whole(_path, _steps, _k):
         """Run the flow up to function _k (all of it when _k is its length) on the whole data, in the background.
         Returns a line for the panel (None when there is nothing to say)."""
-        if not whole_auto.value or not _steps:
+        if not _steps:
             return None
         _k = len(_steps) if _k is None or _k < 0 else min(int(_k), len(_steps))
         _final = _k == len(_steps)
@@ -1103,7 +1103,7 @@ def _(BatchJob, DEFAULT_DIR, FORMATS, Path, SEGY_FORMATS, SimpleNamespace, WIDGE
             _cur.cancel()
 
     batch_cancel = mo.ui.button(label="✖  Cancel", kind="danger", tooltip=WIDGET_INFO["batch_cancel"], on_click=_cancel_batch)
-    return (batch_cancel, batch_fmt, batch_from, batch_out, batch_overwrite, batch_to, start_whole, whole_auto, whole_status,
+    return (batch_cancel, batch_fmt, batch_from, batch_out, batch_overwrite, batch_to, start_whole, whole_status,
             save_button, save_data_button, save_data_fmt, save_dir, save_dpi, save_fmt, save_tables)
 
 
@@ -1188,7 +1188,7 @@ def _(WIDGET_INFO, batch_cancel, job_refresh, job_version, jobs, mo, os, set_job
 
 @app.cell
 def _(SimpleNamespace, FUNCTION_INFO, batch_fmt, batch_from, batch_out, batch_overwrite, batch_to, ctx, ctx_error, job_version,
-       whole_auto, whole_status,
+       whole_status,
        grid_msg, grid_reset, survey_grid,
        estimate_batch, ffid_slider, flow_add, flow_toggle, form, func, last, live, live_display, load_button,
        mo, not_loaded, path_input, pipe_cards, pipe_down, pipe_remove, pipe_run, run_all, pipe_slots, pipe_steps, pipe_up,
@@ -1257,13 +1257,13 @@ def _(SimpleNamespace, FUNCTION_INFO, batch_fmt, batch_from, batch_out, batch_ov
                 _est_txt = f"{_est['shots']:,} shots · {_est['traces']:,} traces · about {_est['gigabytes']:.1f} GB per run"
             except Exception as _e:
                 _est_txt = f"<b>{_e}</b>"
-            _flow.append(whole_auto)
             _flow.append(mo.accordion({"🌐  Whole data: output file & FFID range": mo.vstack([
-                mo.md(f"<span {_muted}>▶ beside a function runs the flow up to it on every shot of the range, in the "
-                      "background (progress and Cancel bottom right); <b>▶ Run flow</b> runs all of it and writes the "
-                      "flow's product to the file below - the processed shots, or the NMO-corrected gathers / the stack "
-                      "when the flow ends with NMO Correction / CDP Stack. A function already run on the whole data "
-                      "(🌐✓) is not run again: the next one starts from its result.</span>"),
+                mo.md(f"<span {_muted}>▶ beside a function previews the selected shot only. <b>▶ Run flow</b> runs "
+                      "the whole flow on every shot of the range in one pass - each shot read once, all functions in "
+                      "memory, the result written once - in the background (progress and Cancel bottom right), and "
+                      "writes the flow's product to the file below: the processed shots, or the NMO-corrected gathers "
+                      "/ the stack when the flow ends with NMO Correction / CDP Stack. 🌐✓ = done on the whole data "
+                      "with these settings.</span>"),
                 batch_out,
                 mo.hstack([batch_from, batch_to, batch_fmt, batch_overwrite], justify="start", align="end", gap=1.2, wrap=True),
                 mo.md(f"<span {_muted}>{_est_txt}</span>"),
