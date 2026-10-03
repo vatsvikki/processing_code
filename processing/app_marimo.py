@@ -537,17 +537,20 @@ def _(FUNCTION_INFO, SimpleNamespace, WIDGET_INFO, add_open, functions, html, mo
                                     on_click=lambda _, _i=_i: _remove(_i)) for _i in range(_n)]
 
         def _run(_k):
-            # ▶: compute the flow up to stage _k now (-1 = all) and show that stage; nothing runs before a ▶ is pressed
+            # ▶: compute the flow up to stage _k now (-1 = all) and show that stage; nothing runs before a ▶ is pressed.
+            # The same ▶ starts the run of the flow up to there on the whole data (the RIGHT cell starts it, it has the
+            # parameters); the ▶ at the end runs all of it - only what was not run on the whole data yet
             _labels = [_l for _l in pipe_mem["slots"] if _l in pipe_steps]
             _k = len(_labels) if _k < 0 else _k
             pipe_mem["run_to"] = _k
+            pipe_mem["whole_to"] = _k
             pipe_mem["view"] = f"{_k}. {_labels[_k - 1]}" if _k > 0 else "0. Input (raw)"
             set_active(_flow_key)
             set_run_version(lambda n: n + 1)
 
         pipe_run = [mo.ui.button(label="▶", kind="success", tooltip=WIDGET_INFO["step_run"],
                                  on_click=lambda _, _i=_i: _run(_i + 1)) for _i in range(_n)]
-        run_all = mo.ui.button(label="▶  Run all", kind="success", tooltip=WIDGET_INFO["run_all"], disabled=_n == 0,
+        run_all = mo.ui.button(label="▶  Run flow", kind="success", tooltip=WIDGET_INFO["run_all"], disabled=_n == 0,
                                on_click=lambda _: _run(-1))
         flow_toggle = mo.ui.button(
             label="✕  Cancel" if _open else "＋  Add a function", kind="neutral" if _open else "success",
@@ -777,7 +780,7 @@ def _(html, mo):
 
 @app.cell
 def _(Path, coerce, ctx, default_for, ffid_slider, form, func, grid_rev, last, live, live_display, loaded, mo, not_loaded, path_input, show_progress,
-       pipe_mem, pipe_params, pipe_slots, pipe_steps, pipe_view, plot_tag, render, run_version):
+       pipe_mem, pipe_params, pipe_slots, pipe_steps, pipe_view, plot_tag, render, run_version, start_whole):
     # ---- RIGHT: run the selected function, show its outputs ----------------
     run_version()  # (runs again after a ▶ of the flow)
     grid_rev  # (runs again when the survey grid of the Data card changes)
@@ -831,7 +834,7 @@ def _(Path, coerce, ctx, default_for, ffid_slider, form, func, grid_rev, last, l
         )
     else:
         _vals.update(_form_vals or {})
-        _extra = {}
+        _extra, _whole_msg = {}, None
         if func.kind == "pipeline" and pipe_slots is not None:
             # the flow: one {"step": key, "params": {...}} per place, top to bottom; view = the stage shown
             _extra["steps"] = [
@@ -842,6 +845,10 @@ def _(Path, coerce, ctx, default_for, ffid_slider, form, func, grid_rev, last, l
             _extra["view"] = list(pipe_view.options).index(pipe_view.value)
             # nothing is computed unless a ▶ was pressed (then run up to that stage); otherwise the stored results show
             _extra["run_to"] = pipe_mem.pop("run_to", None)
+            # ...and the same ▶ runs the flow up to there on the whole data, in the background (card bottom right)
+            _whole_to = pipe_mem.pop("whole_to", None)
+            _whole_msg = start_whole(path_input.value, _extra["steps"], _whole_to) if _whole_to is not None else None
+            last["flow_all"] = _extra["steps"]
             # the whole-data run uses the flow as set up, up to the stage on screen - whether its steps ran here or not
             last["flow_steps"] = _extra["steps"][:_extra["view"]]
             last["flow_path"] = path_input.value
@@ -868,6 +875,8 @@ def _(Path, coerce, ctx, default_for, ffid_slider, form, func, grid_rev, last, l
                 else:
                     _blocks.append(render(_o))
             last["zoom"] = zoom_select is not None
+            if func.kind == "pipeline" and _whole_msg:
+                _blocks.insert(0, mo.callout(mo.md(_whole_msg), kind="info"))
             right = mo.vstack(_blocks, gap=1.5).style({"min-width": "0", "max-width": "100%"})
         except Exception as _e:  # show the problem instead of a stack trace
             right = mo.callout(mo.md(f"**{type(_e).__name__}:** {_e}"), kind="danger")
@@ -979,63 +988,122 @@ def _(BatchJob, DEFAULT_DIR, FORMATS, Path, SEGY_FORMATS, SimpleNamespace, WIDGE
     _default_out = str(_src.parent / f"{_src.stem}_processed.sgy")
     batch_out = mo.ui.text(value=_default_out, label="Output SEG-Y file " + tip(WIDGET_INFO["batch_out"]),
                             full_width=True)
-    batch_overwrite = mo.ui.checkbox(value=False, label="overwrite if the file exists " + tip(WIDGET_INFO["batch_overwrite"]))
+    batch_overwrite = mo.ui.checkbox(value=True, label="overwrite if the file exists " + tip(WIDGET_INFO["batch_overwrite"]))
+    import json as _json
+    from functions.cdp_flow import processed_path as _processed_path, processed_ready as _processed_ready, split_flow as _split_flow
+    from functions.pipeline import get_step as _get_step
+
+    _cdp_keys = ("nmo_correction_step", "cdp_stack_step")
+    _cat = lambda _k: _get_step(_k).category
+    _label = lambda _k: _get_step(_k).label
+
+    def _mtime(_f):
+        try:
+            return os.path.getmtime(_f)
+        except OSError:
+            return None
+
     _abbr = {"correct_dead": "cd", "geometric_spreading": "gs", "spiking_decon": "decon", "bandpass_filter": "bp",
              "agc_gain": "agc", "top_mute": "mute"}
 
-    def _flow_of_shot():
-        # the flow as set up (up to the stage on screen) - whether or not each step was run here with ▶
-        if last.get("flow_steps"):
-            return SimpleNamespace(path=last["flow_path"], flow=list(last["flow_steps"]))
-        _shot = next((_o.content for _o in last.get("outs") or [] if _o.kind == "data"), None)
-        return _shot if _shot is not None and _shot.flow else None
+    # ▶ beside a function of the Flow also runs the flow up to it on the whole data; the ▶ Run flow at the end runs
+    # all of it. Every run starts from the furthest whole-data result of the first steps already kept (output/flows),
+    # so only what was not run on the whole data yet is done (BatchJob / cdp_flow.best_start).
+    whole_auto = mo.ui.checkbox(value=True, label="🌐 ▶ also runs on the whole data " + tip(WIDGET_INFO["whole_auto"]))
 
-    def _start_batch(_):
-        # runs the flow on the whole data and writes its product: the processed shots, or - with CDP steps - the
-        # CDP-sorted gathers, the NMO-corrected gathers or the stack. Refuses to interrupt a run that is going.
-        _shot = _flow_of_shot()
-        if _shot is None:
-            set_save_msg("There is no flow to apply - add a function to the flow first.")
-            return
+    def _target(_steps):
+        # what a whole-data run of these steps does: the trailing QC / Display functions only mark or show, they
+        # leave nothing on the whole data (QC flags are used by the Correct Dead Traces after them)
+        _t = list(_steps)
+        while _t and _t[-1]["step"] not in _cdp_keys and _cat(_t[-1]["step"]) in ("QC", "Display"):
+            _t.pop()
+        return _t
+
+    def _out_for(_t, _final):
+        # the flow's product: the output box (untouched default = named after the product); a CDP step that is not
+        # the last function writes its own product next to it; shot steps that are not the last: kept internally
+        _kind = {"nmo_correction_step": "nmo_gathers", "cdp_stack_step": "stack"}.get(_t[-1]["step"])
+        if not _final and not _kind:
+            return None
+        _box = batch_out.value if _final else ""
+        if _kind and str(_box).strip() in ("", _default_out):
+            _box = str(Path(str(batch_out.value).strip() or _default_out).expanduser().parent / f"{_src.stem}_{_kind}.sgy")
+        _a, _b = int(batch_from.value or _lo), int(batch_to.value or _hi)
+        _tag = "_".join(_abbr.get(_s["step"], _s["step"]) for _s in _t if _s["step"] not in _cdp_keys)
+        return str(resolve_output(_box, str(path_input.value), f"{_src.stem}_{_tag or _kind}_FFID{_a}-{_b}.sgy"))
+
+    def _key(_t, _out):
+        return _json.dumps([str(path_input.value), _t, int(batch_from.value or _lo), int(batch_to.value or _hi),
+                           batch_fmt.value, _out], sort_keys=True, default=str)
+
+    def start_whole(_path, _steps, _k):
+        """Run the flow up to function _k (all of it when _k is its length) on the whole data, in the background.
+        Returns a line for the panel (None when there is nothing to say)."""
+        if not whole_auto.value or not _steps:
+            return None
+        _k = len(_steps) if _k is None or _k < 0 else min(int(_k), len(_steps))
+        _final = _k == len(_steps)
+        _t = _target(_steps[:_k])
+        _name = f"{_k}. {_label(_steps[_k - 1]['step'])}" if _k else ""
+        if not _t:
+            return (f"🌐 **{_name}** marks or shows only - nothing to run on the whole data for it (it is applied there "
+                    "with the functions that change the data).")
+        _bad = _split_flow(_t)[2]
+        if _bad:
+            return "🌐 Not run on the whole data: " + "; ".join(_bad)
+        try:
+            _out = _out_for(_t, _final)
+        except Exception as _e:
+            return f"🌐 **Not run on the whole data - {type(_e).__name__}:** {_e}"
         _cur = jobs.get("current")
         if _cur is not None and _cur.running:
-            if jobs.get("current_kind") == "save":
-                set_save_msg("A save is already running - cancel it first (see the card at the bottom right of the page).")
-                return
+            # a run that already covers this (same first functions, same settings) goes on
+            if _cur.path == str(_path).strip() and _cur.steps[:len(_t)] == _t and (_out is None or _cur.out_path == _out):
+                return f"🌐 Already running on the whole data ({_cur.title}) - see the card at the bottom right."
             _cur.cancel()
-        _a, _b = int(batch_from.value or _lo), int(batch_to.value or _hi)
-        _cdp_kind = next((_s["step"] for _s in reversed(_shot.flow)
-                          if _s["step"] in ("nmo_correction_step", "cdp_stack_step")), "")
-        _kind = {"nmo_correction_step": "nmo_gathers", "cdp_stack_step": "stack"}.get(_cdp_kind)
-        _tag = "_".join(_abbr.get(_s["step"], _s["step"]) for _s in _shot.flow
-                        if _s["step"] not in ("nmo_correction_step", "cdp_stack_step"))
-        _box = batch_out.value
-        if _kind and str(_box).strip() == _default_out:     # untouched default name: name it after the product
-            _box = str(_src.parent / f"{_src.stem}_{_kind}.sgy")
+            _cur.join(10)
+        _done = jobs.setdefault("products", {})
+        if _out is not None and _mtime(_out) is not None and _done.get(_key(_t, _out)) == _mtime(_out):
+            return f"🌐 Up to **{_name}** was already run on the whole data with these settings: `{_out}`"
         try:
-            # a folder or an empty box gets an automatic name inside / next to the input; see resolve_output
-            _out = resolve_output(_box, _shot.path, f"{Path(_shot.path).stem}_{_tag or _kind}_FFID{_a}-{_b}.sgy")
-            jobs["current"] = BatchJob(
-                _shot.path, _shot.flow, str(_out), fmt=batch_fmt.value, ffid_from=_a, ffid_to=_b,
-                overwrite=bool(batch_overwrite.value),
-            ).start()
-            jobs["current_kind"] = "save"
+            _job = BatchJob(str(_path), _t, _out, fmt=batch_fmt.value, ffid_from=int(batch_from.value or _lo),
+                            ffid_to=int(batch_to.value or _hi), overwrite=bool(batch_overwrite.value))
         except Exception as _e:
-            set_save_msg(f"**Could not start - {type(_e).__name__}:** {_e}")
-            return
-        set_save_msg(f"Running the flow on the whole data -> `{_out}`  \nProgress and Cancel are in the card at the "
-                     "bottom right of the page.")
+            return f"🌐 **Not run on the whole data - {type(_e).__name__}:** {_e}"
+        _job.title = ("whole flow" if _final else f"up to {_name}") + ("" if _out else " (kept for the next functions)")
+        _job.key = _key(_t, _out) if _out else ""
+        jobs["current"] = _job.start()
+        jobs["current_kind"] = "save"
+        jobs["announced"] = None
         set_job_version(lambda v: v + 1)
+        return (f"🌐 Running the flow **{_job.title}** on the whole data (FFID {_job.ffid_from} – {_job.ffid_to}) - "
+                "progress and Cancel in the card at the bottom right. Steps already run on the whole data are reused.")
+
+    def whole_status(_path, _steps, _k):
+        """'⏳' running, '✓' done on the whole data with these settings, '' not (yet) - for function _k of the flow."""
+        _t = _target(_steps[:_k])
+        if not _t:
+            return ""
+        _cur = jobs.get("current")
+        if _cur is not None and _cur.running and _cur.steps[:len(_t)] == _t:
+            return "⏳"
+        try:
+            _out = _out_for(_t, _k == len(_steps))
+            if _out is not None and _t[-1]["step"] in _cdp_keys:
+                _m = _mtime(_out)
+                return "✓" if _m is not None and jobs.get("products", {}).get(_key(_t, _out)) == _m else ""
+            _proc = _processed_path(str(_path), _t, int(batch_from.value or _lo), int(batch_to.value or _hi))
+            return "✓" if _processed_ready(_proc) else ""
+        except Exception:
+            return ""
 
     def _cancel_batch(_):
         _cur = jobs.get("current")
         if _cur is not None and _cur.running:
             _cur.cancel()
 
-    batch_button = mo.ui.button(label="▶  Run flow on whole data", kind="success", tooltip=WIDGET_INFO["batch_button"],
-                                on_click=_start_batch)
     batch_cancel = mo.ui.button(label="✖  Cancel", kind="danger", tooltip=WIDGET_INFO["batch_cancel"], on_click=_cancel_batch)
-    return (batch_button, batch_cancel, batch_fmt, batch_from, batch_out, batch_overwrite, batch_to,
+    return (batch_cancel, batch_fmt, batch_from, batch_out, batch_overwrite, batch_to, start_whole, whole_auto, whole_status,
             save_button, save_data_button, save_data_fmt, save_dir, save_dpi, save_fmt, save_tables)
 
 
@@ -1047,7 +1115,7 @@ def _(mo):
 
 
 @app.cell
-def _(WIDGET_INFO, batch_cancel, job_refresh, job_version, jobs, mo, set_job_version):
+def _(WIDGET_INFO, batch_cancel, job_refresh, job_version, jobs, mo, os, set_job_version):
     # ---- whole-data job: a card fixed at the bottom right of the window (polled every 2 s while the job runs) ----
     job_version()
     _job = jobs.get("current")
@@ -1065,9 +1133,18 @@ def _(WIDGET_INFO, batch_cancel, job_refresh, job_version, jobs, mo, set_job_ver
             set_job_version(lambda v: v + 1)
 
         _running = _s["status"] == "running"
+        if not _running and jobs.get("announced") is not _job:
+            # finished: remember its product (a ▶ with the same settings then does not make it again) and redraw the
+            # page once, so the Flow card's 🌐 marks show what is done on the whole data
+            jobs["announced"] = _job
+            if _s["status"] == "done" and getattr(_job, "key", "") and _s["out_path"]:
+                try:
+                    jobs.setdefault("products", {})[_job.key] = os.path.getmtime(_s["out_path"])
+                except OSError:
+                    pass
+            set_job_version(lambda v: v + 1)
         _pct = 100.0 * _s["done"] / _s["total"] if _s["total"] else 0.0
-        _auto = jobs.get("current_kind") != "save"
-        _name = _s["out_path"].rsplit("/", 1)[-1] if _s["out_path"] else "(check only, nothing written)"
+        _name = _s["out_path"].rsplit("/", 1)[-1] if _s["out_path"] else "kept in output/flows for the next functions"
         _look = {"running": ("#2a78d6", "⏳"), "done": ("#2b9a66", "✅"), "cancelled": ("#c98a1b", "⚠️"), "error": ("#e34948", "❌")}
         _color, _icon = _look.get(_s["status"], ("#6b7280", "•"))
         _r = _s["result"]
@@ -1087,13 +1164,13 @@ def _(WIDGET_INFO, batch_cancel, job_refresh, job_version, jobs, mo, set_job_ver
                        + (f"<br/>report: <code>{_r.report_path}</code>" if _r.report_path else ""))
         else:
             _detail = _s["message"]
-        if _auto:
-            _title = {"running": "Checking the flow on the whole file", "done": "Whole file checked - the flow ran on every shot",
-                      "cancelled": "Check cancelled - nothing was written anyway",
-                      "error": "Whole-file check failed"}.get(_s["status"], "")
-        else:
-            _title = {"running": "Running the flow on the whole data", "done": "Flow run on the whole data",
-                      "cancelled": "Cancelled - no file was written", "error": "Whole-data run failed"}.get(_s["status"], "")
+        _what = getattr(_job, "title", "") or "the flow"
+        _title = {"running": f"Running {_what} on the whole data", "done": f"Whole data: {_what} done",
+                  "cancelled": "Cancelled - no file was written", "error": "Whole-data run failed"}.get(_s["status"], "")
+        if _s["status"] == "done" and _s["message"] != "finished":
+            _detail = _s["message"]
+        elif _running and getattr(_job, "resumed", ""):
+            _detail += f"<br/>started from {_job.resumed}"
         _card = mo.Html(
             f'<div style="border:1px solid {_color};border-left:6px solid {_color};border-radius:10px;padding:10px 16px">'
             f'<div style="font-weight:700">{_icon} {_title} <span style="opacity:.65;font-weight:400">— {_name}</span></div>'
@@ -1110,7 +1187,8 @@ def _(WIDGET_INFO, batch_cancel, job_refresh, job_version, jobs, mo, set_job_ver
 
 
 @app.cell
-def _(SimpleNamespace, FUNCTION_INFO, batch_button, batch_fmt, batch_from, batch_out, batch_overwrite, batch_to, ctx, ctx_error,
+def _(SimpleNamespace, FUNCTION_INFO, batch_fmt, batch_from, batch_out, batch_overwrite, batch_to, ctx, ctx_error, job_version,
+       whole_auto, whole_status,
        grid_msg, grid_reset, survey_grid,
        estimate_batch, ffid_slider, flow_add, flow_toggle, form, func, last, live, live_display, load_button,
        mo, not_loaded, path_input, pipe_cards, pipe_down, pipe_remove, pipe_run, run_all, pipe_slots, pipe_steps, pipe_up,
@@ -1155,16 +1233,41 @@ def _(SimpleNamespace, FUNCTION_INFO, batch_button, batch_fmt, batch_from, batch
                  mo.accordion({"ⓘ  How the flow works": mo.md(FUNCTION_INFO.get("flow", ""))})]
         if not pipe_slots.value and not flow_add:
             _flow.append(mo.md(f"<span {_muted}>Empty - click ＋ below to add a function.</span>"))
+        job_version()                     # (drawn again when a whole-data run starts / ends: the 🌐 marks)
+        _all = last.get("flow_all") or []
+        _same = len(_all) == len(pipe_slots.value)
+        _marks = {"✓": ('<span title="Run on the whole data with these settings - the next functions start from '
+                        'this result" style="color:#2b9a66;font-size:.85rem">🌐✓</span>'),
+                  "⏳": '<span title="Running on the whole data now" style="font-size:.85rem">🌐⏳</span>'}
         for _i, _label in enumerate(pipe_slots.value):
             _desc = pipe_steps[_label].description if _label in pipe_steps else ""
+            _st = whole_status(path_input.value, _all, _i + 1) if _same and ctx is not None else ""
             _flow.append(mo.hstack(
-                [mo.md(f"**{_i + 1}. {_label}** {tip(_desc)}"),
+                [mo.md(f"**{_i + 1}. {_label}** {tip(_desc)} {_marks.get(_st, '')}"),
                  mo.hstack([pipe_run[_i], pipe_up[_i], pipe_down[_i], pipe_remove[_i]], justify="end", gap=0.25)],
                 justify="space-between", align="center", gap=0.5))
             if str(_i) in pipe_cards:
                 _flow.append(pipe_cards[str(_i)])
         _flow.append(mo.hstack([flow_toggle] + ([run_all] if run_all is not None and pipe_slots.value else []),
                                justify="start", gap=0.6))
+        if pipe_slots.value and ctx is not None:
+            # where / on which shots the whole-data runs of the ▶ buttons write
+            try:
+                _est = estimate_batch(path_input.value, int(batch_from.value or 0), int(batch_to.value or 0))
+                _est_txt = f"{_est['shots']:,} shots · {_est['traces']:,} traces · about {_est['gigabytes']:.1f} GB per run"
+            except Exception as _e:
+                _est_txt = f"<b>{_e}</b>"
+            _flow.append(whole_auto)
+            _flow.append(mo.accordion({"🌐  Whole data: output file & FFID range": mo.vstack([
+                mo.md(f"<span {_muted}>▶ beside a function runs the flow up to it on every shot of the range, in the "
+                      "background (progress and Cancel bottom right); <b>▶ Run flow</b> runs all of it and writes the "
+                      "flow's product to the file below - the processed shots, or the NMO-corrected gathers / the stack "
+                      "when the flow ends with NMO Correction / CDP Stack. A function already run on the whole data "
+                      "(🌐✓) is not run again: the next one starts from its result.</span>"),
+                batch_out,
+                mo.hstack([batch_from, batch_to, batch_fmt, batch_overwrite], justify="start", align="end", gap=1.2, wrap=True),
+                mo.md(f"<span {_muted}>{_est_txt}</span>"),
+            ], gap=0.5)}))
         if flow_add is not None:
             _flow.append(flow_add)
         if pipe_view is not None:
@@ -1221,28 +1324,6 @@ def _(SimpleNamespace, FUNCTION_INFO, batch_button, batch_fmt, batch_from, batch
     if last.get("outs"):
         _shot = next((_o.content for _o in last["outs"] if _o.kind == "data"), None)
         _has_data = _shot is not None
-        _whole = []
-        _flow_set = last.get("flow_steps") or (_shot.flow if _has_data else None)
-        if _flow_set and ctx is not None:
-            _shot = SimpleNamespace(path=last.get("flow_path") or _shot.path, flow=list(_flow_set))
-            _steps_txt = " → ".join(_s["step"].replace("_", " ") for _s in _shot.flow)
-            try:
-                _est = estimate_batch(_shot.path, int(batch_from.value or 0), int(batch_to.value or 0))
-                _est_txt = (f"{_est['shots']:,} shots · {_est['traces']:,} traces · about {_est['gigabytes']:.1f} GB "
-                            "will be written")
-            except Exception as _e:
-                _est_txt = f"<b>{_e}</b>"
-            _whole = [
-                mo.md("#### 🌐 Whole data"),
-                mo.md(f"<span {_muted}>{len(_shot.flow)} step(s): {_steps_txt}. **Run flow on whole data** applies "
-                      "the shot steps to every shot of the range and writes the flow's product: the processed shots - "
-                      "or, when the flow ends with NMO Correction / CDP Stack, the NMO-corrected CDP gathers or the "
-                      "stack. Progress and Cancel are in the card at the bottom right of the page.</span>"),
-                batch_out,
-                mo.hstack([batch_from, batch_to, batch_fmt, batch_overwrite], justify="start", align="end", gap=1.2, wrap=True),
-                mo.md(f"<span {_muted}>{_est_txt}</span>"),
-                batch_button,
-            ]
         _save_card = (
             mo.vstack(
                 [
@@ -1253,7 +1334,6 @@ def _(SimpleNamespace, FUNCTION_INFO, batch_button, batch_fmt, batch_from, batch
                         justify="start", align="end", gap=1.2, wrap=True,
                     ),
                     save_dir,
-                    *_whole,
                     mo.md(save_msg()).style({"overflow-wrap": "anywhere"}),
                 ],
                 gap=0.5,

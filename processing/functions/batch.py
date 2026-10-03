@@ -38,7 +38,7 @@ _STATES = ("idle", "running", "done", "cancelled", "error")
 
 @dataclass
 class BatchResult:
-    out_path: str | None             # None for a dry run
+    out_path: str | None             # None: only the shot steps' result, kept in output/flows
     report_path: str | None
     shots: int
     traces_in: int
@@ -102,7 +102,10 @@ def estimate(path: str, ffid_from: int = 0, ffid_to: int = 0) -> dict:
 class BatchJob:
     def __init__(self, path: str, steps: list[dict], out_path: str | None, *, fmt: str = "ibm",
                  ffid_from: int = 0, ffid_to: int = 0, workers: int = 0, overwrite: bool = False):
-        """out_path=None is a dry run: everything is computed and counted, nothing is written."""
+        """out_path = the flow's product (the processed shots, or the last CDP step's NMO gathers / stack).
+        out_path=None: only the shot steps are run, and their result is kept in the output folder (output/flows) for
+        the next steps - a run starts from the furthest such result already there, so a step done once on the whole
+        data is never done again."""
         if fmt not in FORMATS:
             raise ValueError(f"unknown sample format {fmt!r}; use one of {FORMATS}")
         if not steps:
@@ -113,8 +116,6 @@ class BatchJob:
         if problems:
             raise ValueError("; ".join(problems))
         self.product = self.cdp_steps[-1]["step"] if self.cdp_steps else ""
-        # the intermediate file of a CDP flow is kept in IEEE float (no precision lost before the CDP steps)
-        self._phase1_fmt = "ieee" if self.cdp_steps else fmt
         self.path = os.path.expanduser(str(path).strip())
         if out_path is not None:                               # never let a job write onto the file it reads
             out_path = os.path.abspath(os.path.expanduser(str(out_path)))
@@ -126,6 +127,8 @@ class BatchJob:
         self.unit, self.phase, self.cdps = "shots", "", 0
         self.done = self.total = self.traces_in = self.traces_out = 0
         self.result: BatchResult | None = None
+        self.title = ""                                        # what the GUI calls this run ("up to 3. Bandpass ...")
+        self.resumed = ""                                      # the saved result it started from, if any
         self._t0 = self._t1 = 0.0
         self._cancel = threading.Event()
         self._thread: threading.Thread | None = None
@@ -164,16 +167,16 @@ class BatchJob:
         raw_headers, hdr, data = sgy.read_block(i0, i0 + n)
         gather = segy_io.ShotGather(ffid=int(idx.ffids[k]), i0=i0, data=data, headers=hdr, dt_ms=sgy.dt_ms)
         try:
-            stages = run_steps(gather, self.shot_steps, path=self.path, batch=True)
+            stages = run_steps(gather, self._remaining, path=self.path, batch=True)
         except Exception as e:
             raise type(e)(f"FFID {gather.ffid}: {e}") from e
         final = stages[-1].state
         packed = None
-        if self.out_path is not None and final.gather.ntr:
-            packed = pack_traces(raw_headers[final.src], final.gather.headers, final.gather.data, self._phase1_fmt,
+        if self._writing and final.gather.ntr:
+            packed = pack_traces(raw_headers[final.src], final.gather.headers, final.gather.data, self._pack_fmt,
                                  sgy.order)
         return {"ffid": gather.ffid, "in": n, "out": final.gather.ntr, "packed": packed,
-                "notes": " | ".join(f"{s.label}: {s.note}" for s in stages[1:])}
+                "notes": " | ".join(f"{s.label}: {s.note}" for s in stages[1:]) or "(saved result copied)"}
 
     def _head_lines(self, sgy: segy_io.SegyFile, idx: segy_io.ShotIndex, sel: list[int]) -> list[str]:
         """Text-header cards (max 4): what was done, on which shots, and the deconvolution settings."""
@@ -244,29 +247,44 @@ class BatchJob:
     def _run(self) -> None:
         part, fh = None, None
         try:
-            sgy = segy_io.open_segy(self.path)
-            idx, sel = select_shots(self.path, self.ffid_from, self.ffid_to)
+            final_out = os.path.expanduser(self.out_path) if self.out_path is not None else None
+            # the shot steps: carry on from the furthest whole-data result of the first of them already saved
+            proc = cdp_flow.processing_steps(self.shot_steps)
+            cache = cdp_flow.processed_path(self.path, self.shot_steps, self.ffid_from, self.ffid_to) if proc else None
+            start, j = cdp_flow.best_start(self.path, proc, self.ffid_from, self.ffid_to) if proc else (None, 0)
+            self._remaining = proc[j:]
+            if j:
+                self.resumed = f"the saved whole-data result of the first {j} step(s)"
+            src = start or self.path                              # the file the shots are read from
+            same = (not self.cdp_steps and final_out is not None and start is not None
+                    and os.path.abspath(start) == final_out)
+            if not proc or same or (not self._remaining and (self.cdp_steps or final_out is None)):
+                phase1_out = None                                 # nothing (new) to do per shot
+                if final_out is None:
+                    self.message = ("already run on the whole data - its result is kept" if proc
+                                    else "no processing step - nothing to run on the shots")
+            elif self.cdp_steps or final_out is None:
+                phase1_out = cache                                # kept for the next steps (output/flows)
+            else:
+                phase1_out = final_out                            # the flow's product: the processed shots
+            cdp_src = cache if (proc and self.cdp_steps) else self.path
+            if (self.cdp_steps and final_out is not None and os.path.exists(final_out) and not self.overwrite):
+                raise FileExistsError(f"{final_out} already exists - choose another name or tick 'overwrite'")
+            if same:
+                self.message = "already run on the whole data - the output file is this flow's result"
+            sgy = segy_io.open_segy(src)
+            idx, sel = select_shots(src, self.ffid_from, self.ffid_to)
             self.total = len(sel)
             rows: list[dict] = []
-            final_out = os.path.expanduser(self.out_path) if self.out_path is not None else None
-            if final_out is not None and os.path.exists(final_out) and not self.overwrite:
-                raise FileExistsError(f"{final_out} already exists - choose another name or tick 'overwrite'")
-            # where the shot steps write: the output itself, or - with CDP steps - the intermediate file (kept per flow)
-            phase1_out, src = self.out_path, self.path
-            if self.cdp_steps:
-                if not cdp_flow.processing_steps(self.shot_steps):
-                    phase1_out = None                              # nothing to process per shot: the CDPs use the raw file
-                else:
-                    src = cdp_flow.processed_path(self.path, self.shot_steps, self.ffid_from, self.ffid_to)
-                    phase1_out = None if cdp_flow.processed_ready(src) else src
-                    if phase1_out is None:
-                        self.message = "the shot steps were run on the whole data before - reusing their result"
-            run_phase1 = phase1_out is not None or not self.cdp_steps
+            run_phase1 = phase1_out is not None
+            self._writing = run_phase1
             if phase1_out is not None:
                 out = os.path.expanduser(phase1_out)
-                if os.path.exists(out) and not self.overwrite:
+                if os.path.exists(out) and not self.overwrite and out != cache:
                     raise FileExistsError(f"{out} already exists - choose another name or tick 'overwrite'")
                 os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+                if out == cache:                                  # this flow's old results nobody can use any more
+                    cdp_flow.drop_stale(self.path, proc)
                 need = int(sum(idx.count[k] for k in sel)) * sgy.trace_bytes + sgy.data_start
                 free = shutil.disk_usage(os.path.dirname(os.path.abspath(out))).free
                 if free < need * 1.02 + 50e6:
@@ -274,8 +292,11 @@ class BatchJob:
                                   f"{free / 1e9:.1f} GB free in {os.path.dirname(os.path.abspath(out))}")
                 part = out + ".part"
                 fh = open(part, "wb")
-                fh.write(build_head(sgy, self._head_lines(sgy, idx, sel), self._phase1_fmt))
-            self.message = f"processing {len(sel)} shots with {self.workers} threads"
+                fh.write(build_head(segy_io.open_segy(self.path), self._head_lines(sgy, idx, sel),
+                                    self.fmt if out == final_out else "ieee"))
+            self._pack_fmt = self.fmt if phase1_out is not None and phase1_out == final_out else "ieee"
+            if run_phase1:
+                self.message = f"processing {len(sel)} shots with {self.workers} threads"
             self.phase = "shot steps"
 
             with (ThreadPoolExecutor(max_workers=self.workers, thread_name_prefix="shot") if run_phase1
@@ -317,28 +338,31 @@ class BatchJob:
                 out = os.path.expanduser(phase1_out)
                 os.replace(part, out)
                 part = None
-                if self.cdp_steps:
-                    cdp_flow.mark_processed(out, {"source": sgy.path, "steps": cdp_flow.processing_steps(self.shot_steps),
-                                                  "ffid_from": self.ffid_from, "ffid_to": self.ffid_to,
-                                                  "shots": self.done, "traces": self.traces_out})
-                report = os.path.splitext(final_out or out)[0] + "_report.csv"
+                info = {"source": segy_io.open_segy(self.path).path, "steps": proc, "ffid_from": self.ffid_from,
+                        "ffid_to": self.ffid_to, "shots": self.done, "traces": self.traces_out}
+                # remembered for the next steps: the kept file, or the user's output when that is this result
+                if out == cache or not cdp_flow.processed_ready(cache):    # (a kept file stays the record)
+                    cdp_flow.mark_processed(cache, info, file=None if out == cache else out)
+                report = os.path.splitext(out)[0] + "_report.csv"
                 with open(report, "w", newline="") as f:
                     w = csv.DictWriter(f, fieldnames=["ffid", "traces_in", "traces_out", "removed", "notes"])
                     w.writeheader()
                     w.writerows(rows)
             if self.cdp_steps and final_out is not None:
                 part = final_out + ".part"
-                self._cdp_phase(src, part)
+                self._cdp_phase(cdp_flow.processed_file(cdp_src) if cdp_src != self.path else self.path, part)
                 os.replace(part, final_out)
                 part = None
             self._t1 = time.perf_counter()
             self.result = BatchResult(
                 out_path=os.path.expanduser(self.out_path) if self.out_path else None, report_path=report,
                 shots=self.done, traces_in=self.traces_in, traces_out=self.traces_out,
-                bytes_out=(os.path.getsize(os.path.expanduser(self.out_path)) if self.out_path else 0),
+                bytes_out=(os.path.getsize(os.path.expanduser(self.out_path)) if self.out_path
+                           else os.path.getsize(cache) if cache and os.path.exists(cache) else 0),
                 seconds=self._t1 - self._t0, notes=describe_flow(self.steps))
+            if not self.message.startswith(("already", "no processing")):
+                self.message = "finished"
             self.status = "done"
-            self.message = "finished" if self.out_path else "finished (dry run, nothing written)"
         except Cancelled:
             self._t1 = time.perf_counter()
             self.status, self.message = "cancelled", f"cancelled during: {self.phase}"

@@ -175,12 +175,15 @@ WIDGET_INFO: dict[str, str] = {
     "batch_out": "Full path of the output SEG-Y file, like the input path. A folder or an empty box gets an automatic name; a "
                  "name without extension gets .sgy. The job never writes onto the input file and refuses to overwrite unless "
                  "'overwrite' is ticked. It writes <name>.part and renames it only when every shot is done.",
-    "batch_from": "First FFID of the range to process (default: the first shot of the file). Also part of what the automatic "
-                  "background check runs against - changing it restarts that check.",
-    "batch_to": "Last FFID of the range to process (default: the last shot of the file). Also part of what the automatic "
-                "background check runs against - changing it restarts that check.",
+    "batch_from": "First FFID of the range to process (default: the first shot of the file). The whole-data results are kept per "
+                  "range: another range runs again from the first function.",
+    "batch_to": "Last FFID of the range to process (default: the last shot of the file). The whole-data results are kept per "
+                "range: another range runs again from the first function.",
     "batch_fmt": "Sample format of the output file: ibm = 4-byte IBM float, ieee = 4-byte IEEE float.",
     "batch_overwrite": "Allow replacing an output file that already exists. Off = the job stops instead of overwriting.",
+    "whole_auto": "On: ▶ beside a function also runs the flow up to it on the whole data (every shot of the FFID range), in "
+                  "the background, starting from the furthest whole-data result already kept; ▶ Run flow runs all of "
+                  "it and writes the product. Off: ▶ works on the selected shot only - for trying settings.",
     "batch_button": "Runs the flow on screen on EVERY shot of the chosen range and writes its product as one SEG-Y file (a "
                     "15 GB file is never held in memory): the processed shots - or, when the flow has CDP steps, the "
                     "CDP-sorted gathers, the NMO-corrected CDP gathers or the stack (the last CDP step decides). With CDP "
@@ -190,9 +193,11 @@ WIDGET_INFO: dict[str, str] = {
     "step_run": "Run the flow up to this function now, on the selected shot, and show its result. The functions above it "
                 "that already ran with the same settings are reused (their result is kept), so only what changed is "
                 "computed. Changing a parameter never runs anything by itself - it marks this function and the ones "
-                "below it 'not run yet' until you press ▶.",
-    "run_all": "Run every function of the flow on the selected shot (reusing the results still valid) and show the last "
-               "one.",
+                "below it 'not run yet' until you press ▶. With '🌐 ▶ also runs on the whole data' ticked it also runs "
+                "the flow up to here on every shot of the FFID range in the background (from the furthest whole-data "
+                "result already kept); 🌐✓ beside a function = done on the whole data with these settings.",
+    "run_all": "Run every function of the flow - on the selected shot, and on the whole data whatever was not run there "
+               "yet (functions marked 🌐✓ are reused) - and write the flow's product to the output file.",
     "batch_cancel": "Stops the whole-data run (press Run again to restart it). No file is written by a cancelled run (a "
                     "partial '.part' file is removed).",
     "job_dismiss": "Remove this message from the top of the page.",
@@ -584,7 +589,7 @@ remove them with −; each has its parameters and this explanation in its card.
 
 **Nothing runs by itself.** Changing a parameter only records it: that function and the ones below it are "not run yet"
 (the panel says so and shows the last result still valid). **▶** beside a function runs the flow up to it on the
-selected shot and shows its result; **▶ Run all** runs every function. The result of every function is kept, so a ▶
+selected shot and shows its result; **▶ Run flow** (at the end) runs every function. The result of every function is kept, so a ▶
 reuses the functions above that already ran with the same settings and computes only what changed (e.g. after
 Spiking Decon has run, ▶ on NMO Correction starts from the deconvolved data). Display settings (clip, trace order,
 zoom, figure size) only redraw. Another FFID shows its raw shot until ▶ is pressed for it.
@@ -594,9 +599,15 @@ zoom, figure size) only redraw. Another FFID shows its raw shot until ▶ is pre
   They must come after the processing steps.
 - **View stage** shows the gather after any function, with its spectrum / autocorrelation against the input.
 
-**Run flow on whole data** (🌐 card) applies it to every shot of the FFID range in the background and writes its
-product: the processed shots, or - when it ends with NMO Correction / CDP Stack - the NMO-corrected CDP gathers or the
-stack. Tools that work on the whole file on their own (CDP Sort, CDP Recalculate, Shot Geometry QC) are in 🛠 Tools.
+**Whole data.** The same **▶** also runs the flow up to that function on every shot of the FFID range, in the
+background (progress and Cancel in the card bottom right; untick *🌐 ▶ also runs on the whole data* to try settings on
+one shot only). Each function's whole-data result is kept (output/flows), and a run always starts from the furthest one
+already there - a function marked 🌐✓ is not run again, the next one starts from its result. **▶ Run flow** runs what
+is left and writes the flow's product to the output file (🌐 *Whole data* settings in the Flow card): the processed
+shots, or - when it ends with NMO Correction / CDP Stack - the NMO-corrected CDP gathers or the stack. If you forgot ▶
+on some function, ▶ Run flow does it. QC functions only mark traces: on the whole data they run together with the
+function after them (their marks are not stored). Results of earlier settings that the flow can no longer use are
+deleted (each is as big as the input). Tools that work on the whole file on their own (CDP Sort, CDP Recalculate, Shot Geometry QC) are in 🛠 Tools.
 """,
     "cdp_stack_step": r"""
 **What it does.** Stacks the CDP gathers the steps above it produced - it has no velocity, NMO, sorting or filter of
@@ -608,7 +619,7 @@ its own:
 - **without it** (e.g. after CDP Sort) - the plain mean of the CDP gathers.
 
 The preview stacks the CDP you pick and shows the notebook's panels: its input gathers, their stack and the velocity
-used. **Run flow on whole data** stacks every CDP (the flow's product is then the stack: one zero-offset trace per CDP,
+used. On the whole data (▶ / ▶ Run flow) it stacks every CDP (the flow's product is then the stack: one zero-offset trace per CDP,
 with the CDP number, data IL / XL in INLINE_3D / CROSSLINE_3D and X / Y x 100 in the header); the stack is kept in the
 output folder and its sections are shown here:
 

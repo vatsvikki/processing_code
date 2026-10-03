@@ -69,22 +69,39 @@ def processed_path(path: str, specs: list[dict], ffid_from: int = 0, ffid_to: in
     return str(Path(DEFAULT_DIR) / "flows" / f"{Path(path).stem}_{sig}.sgy")
 
 
-def processed_ready(p: str) -> bool:
+def processed_file(p: str) -> str | None:
+    """The finished file of the intermediate `p` (the whole-data result of some processing steps), or None.
+    Usually `p` itself; when that result is the flow's final output (written to the user's output file) the
+    record next to `p` points there - and is trusted only while that file is unchanged."""
     try:
-        return json.loads(Path(p + ".json").read_text()).get("done", False) and os.path.exists(p)
+        m = json.loads(Path(p + ".json").read_text())
     except (OSError, ValueError):
-        return False
+        return None
+    f = m.get("file") or p
+    if not m.get("done") or not os.path.exists(f):
+        return None
+    if m.get("file") and (os.path.getsize(f), int(os.path.getmtime(f))) != (m.get("size"), m.get("mtime")):
+        return None                                      # the output file was replaced since
+    return f
 
 
-def mark_processed(p: str, info: dict) -> None:
-    Path(p + ".json").write_text(json.dumps({"done": True, **info}, indent=2, default=str))
+def processed_ready(p: str) -> bool:
+    return processed_file(p) is not None
+
+
+def mark_processed(p: str, info: dict, file: str | None = None) -> None:
+    """Record that the intermediate `p` is finished (its data in `file` when that is not `p` itself)."""
+    extra = {"file": file, "size": os.path.getsize(file), "mtime": int(os.path.getmtime(file))} if file else {}
+    Path(p).parent.mkdir(parents=True, exist_ok=True)
+    Path(p + ".json").write_text(json.dumps({"done": True, **info, **extra}, indent=2, default=str))
 
 
 def find_processed(path: str, specs: list[dict]) -> str | None:
     """A finished intermediate file of these processing steps, for any FFID range (the whole file first)."""
     full = processed_path(path, specs)
-    if processed_ready(full):
-        return full
+    hit = processed_file(full)
+    if hit:
+        return hit
     stem = Path(full).name.rsplit("_", 1)[0]
     want = processing_steps(specs)
     for meta in sorted(Path(full).parent.glob(f"{stem}_*.sgy.json")):
@@ -92,11 +109,54 @@ def find_processed(path: str, specs: list[dict]) -> str | None:
             m = json.loads(meta.read_text())
         except (OSError, ValueError):
             continue
-        if m.get("done") and m.get("source") == segy_io.open_segy(path).path and m.get("steps") == want:
-            p = str(meta)[:-5]
-            if os.path.exists(p):
-                return p
+        if m.get("source") == segy_io.open_segy(path).path and m.get("steps") == want:
+            hit = processed_file(str(meta)[:-5])
+            if hit:
+                return hit
     return None
+
+
+def resumable(proc: list[dict]) -> bool:
+    """Can a later step carry on from the saved result of these processing steps? Not when a QC step among them
+    flagged traces that no Correct Dead Traces after it used yet: the flags are not stored in the file."""
+    last_fix = max((i for i, s in enumerate(proc) if s["step"] == "correct_dead"), default=-1)
+    return not any(get_step(s["step"]).category == "QC" for s in proc[last_fix + 1:])
+
+
+def best_start(path: str, proc: list[dict], ffid_from: int = 0, ffid_to: int = 0) -> tuple[str | None, int]:
+    """(file, j): the saved whole-data result of the longest first j processing steps a run can start from
+    (None, 0 = start from the raw file)."""
+    for j in range(len(proc), 0, -1):
+        if j < len(proc) and not resumable(proc[:j]):
+            continue
+        f = processed_file(processed_path(path, proc[:j], ffid_from, ffid_to))
+        if f:
+            return f, j
+    return None, 0
+
+
+def drop_stale(path: str, proc: list[dict]) -> list[str]:
+    """Delete the intermediate files of this input that no step of the current flow can use any more (made by
+    other settings / steps): each is as big as the input. Results of the current flow's first steps are kept."""
+    src = segy_io.open_segy(path).path
+    folder = Path(DEFAULT_DIR) / "flows"
+    gone = []
+    for meta in folder.glob(f"{Path(path).stem}_*.sgy.json"):
+        try:
+            m = json.loads(meta.read_text())
+        except (OSError, ValueError):
+            continue
+        steps = m.get("steps") or []
+        if m.get("source") != src or steps == proc[:len(steps)]:
+            continue
+        data = Path(str(meta)[:-5])
+        for f in (data, meta, Path(str(data)[:-4] + "_report.csv")):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+        gone.append(str(data))
+    return gone
 
 
 # ---------------------------------------------------------------------------------------------------------------------
