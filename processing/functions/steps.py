@@ -148,8 +148,8 @@ def _gather_flip(g: ShotGather, filtered: np.ndarray, what: str):
 
 
 FK_MODES = ["Velocity fan (from the inputs)", "Manual polygon (drawn on the F-K plot)"]
-_FK_POLY_DEFAULT = [{noise.K_COL: 0.2, noise.F_COL: 0.0}, {noise.K_COL: 1.5, noise.F_COL: 0.0},
-                    {noise.K_COL: 1.5, noise.F_COL: 4.0}, {noise.K_COL: 0.2, noise.F_COL: 1.0}]
+_FK_POLY_DEFAULT = [{noise.Z_COL: 1, noise.K_COL: 0.2, noise.F_COL: 0.0}, {noise.Z_COL: 1, noise.K_COL: 1.5, noise.F_COL: 0.0},
+                    {noise.Z_COL: 1, noise.K_COL: 1.5, noise.F_COL: 4.0}, {noise.Z_COL: 1, noise.K_COL: 0.2, noise.F_COL: 1.0}]
 
 
 @step("F-K Filter", "Removes ground roll and other slow linear noise in the frequency-wavenumber (F-K) domain, one "
@@ -168,10 +168,15 @@ _FK_POLY_DEFAULT = [{noise.K_COL: 0.2, noise.F_COL: 0.0}, {noise.K_COL: 1.5, noi
               Param("fk_f_max", "Filter only below, Hz  (0 = all frequencies)", "float", 0.0, min=0, step=5,
                     group="F-K filter", show_if={"fk_mode": FK_MODES[0]},
                     help="Ground roll is low-frequency: e.g. 25 leaves everything above 25 Hz untouched"),
-              Param("fk_polygon", "Reject polygon corners  (k cycles per 1000 length units, f Hz)", "table",
+              Param("fk_polygon", "Reject zone corners  (zone, k cycles per 1000 length units, f Hz)", "table",
                     _FK_POLY_DEFAULT, group="F-K filter", show_if={"fk_mode": FK_MODES[1]},
-                    help="Filled in when you draw on the F-K domain plot (box or Shift + drag lasso), then press ▶. "
-                         "You can also type or correct the corners here. At least 3 corners"),
+                    help="Filled in when you draw on the F-K domain plot (drag = box, Shift + drag = any shape); the "
+                         "filter is applied at once. Rows with the same 'zone' number are one polygon (at least 3 "
+                         "corners); several zones are all rejected. You can also type or correct the corners here"),
+              Param("fk_add", "Add each drawing to the zone (off = a drawing replaces it)", "bool", False,
+                    group="F-K filter", show_if={"fk_mode": FK_MODES[1]},
+                    help="On: every box / lasso you draw is added as one more zone - build any shape from several "
+                         "pieces. Off: the new drawing replaces the zone"),
               Param("fk_mirror", "Mirror the polygon to negative k", "bool", True, group="F-K filter",
                     show_if={"fk_mode": FK_MODES[1]},
                     help="Ground roll goes both ways from the source (split spread): the same zone at -k is rejected too"),
@@ -182,14 +187,16 @@ _FK_POLY_DEFAULT = [{noise.K_COL: 0.2, noise.F_COL: 0.0}, {noise.K_COL: 1.5, noi
                          "reflection energy is removed")],
       order=37)
 def fk_filter_step(state: PipeState, fk_mode: str = FK_MODES[0], v_reject: float = 3000.0, v_pass: float = 4500.0,
-                   fk_f_max: float = 0.0, fk_polygon=None, fk_mirror: bool = True, fk_plot_fmax: float = 0.0,
+                   fk_f_max: float = 0.0, fk_polygon=None, fk_add: bool = False, fk_mirror: bool = True,
+                   fk_plot_fmax: float = 0.0,
                    fk_output: str = _OUTPUTS[0]):
     g = state.gather
     manual = fk_mode == FK_MODES[1]
     poly = noise.polygon_rows(fk_polygon if fk_polygon is not None else _FK_POLY_DEFAULT) if manual else None
     if manual:
         weight = noise.polygon_weight(poly, fk_mirror)
-        zone = f"reject polygon of {len(poly)} corners" + (" (mirrored to -k)" if fk_mirror else "")
+        zone = (f"reject zone of {len(poly)} polygon(s), {sum(len(p) for p in poly)} corners"
+                + (" (mirrored to -k)" if fk_mirror else ""))
     else:
         if v_pass <= v_reject:
             raise ValueError(f"the pass velocity ({v_pass:g}) must be above the reject velocity ({v_reject:g})")
@@ -201,12 +208,18 @@ def fk_filter_step(state: PipeState, fk_mode: str = FK_MODES[0], v_reject: float
     figs = None
     if shown is not None:
         nyq = 500.0 / g.dt_ms
+        top = max((float(p[:, 1].max()) for p in poly if len(p)), default=10.0) if manual else 0.0
         f_lim = min(fk_plot_fmax if fk_plot_fmax > 0 else
-                    (max(2 * float(poly[:, 1].max()), 20.0) if manual else (fk_f_max * 2 if fk_f_max > 0 else 100.0)), nyq)
+                    (max(2 * top, 20.0) if manual else (fk_f_max * 2 if fk_f_max > 0 else 100.0)), nyq)
         draw = dict(fan=None if manual else (v_reject, v_pass), poly=poly, mirror=fk_mirror)
-        domain = noise.plot_fk(shown, f_lim, "before", **draw)
-        figs = [Output("image", "F-K domain - drag a box or Shift + drag a lasso to draw the reject zone, then press ▶",
+        domain = noise.plot_fk(shown, f_lim, "before", figsize=(8.0, 6.5), **draw)
+        live = plotting.plot_gather(ShotGather(g.ffid, g.i0, np.asarray(out, np.float32), g.headers, g.dt_ms),
+                                    clip=float(np.percentile(np.abs(g.data[:, ::2]), 98)) or 1.0, figsize=(8.0, 6.5),
+                                    title=f"FFID {g.ffid} after the F-K filter (input's clip)")
+        figs = [Output("image", "F-K domain - drag = box, Shift + drag = any shape: applied on release",
                        plotting.figure_to_png(domain), figure=domain, pick="fk"),
+                Output("image", "Shot gather with this reject zone", plotting.figure_to_png(live), figure=live,
+                       pick="fk_live"),
                 flip("F-K spectrum flip-flop (before / after / removed noise)",
                      [(lab, noise.plot_fk(shown, f_lim, which, **draw)) for lab, which in
                       (("Before", "before"), ("After", "after"), ("Removed noise", "removed"))]),

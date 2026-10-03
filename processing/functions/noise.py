@@ -77,36 +77,41 @@ def fk_weight(f: np.ndarray, k: np.ndarray, v_reject: float, v_pass: float, f_ma
     return w
 
 
-K_COL, F_COL = "k (cycles per 1000)", "f (Hz)"         # columns of a drawn / typed F-K reject polygon
+K_COL, F_COL, Z_COL = "k (cycles per 1000)", "f (Hz)", "zone"   # columns of the drawn / typed F-K reject zone
 
 
-def polygon_rows(rows) -> np.ndarray:
-    """[[k per 1000 units, f Hz], ...] from the table rows (empty rows skipped)."""
-    pts = []
+def polygon_rows(rows) -> list[np.ndarray]:
+    """The reject zone's polygons [[k per 1000 units, f Hz], ...] from the table rows - one per 'zone' number (rows
+    without one belong to zone 1); empty rows skipped."""
+    parts: dict = {}
     for r in rows or []:
         low = {str(a).strip().lower(): b for a, b in (r.items() if isinstance(r, dict) else [])}
-        k, f = low.get(K_COL.lower()), low.get(F_COL.lower())
+        k, f, z = low.get(K_COL.lower()), low.get(F_COL.lower()), low.get(Z_COL)
         if k in (None, "") or f in (None, ""):
             continue
-        pts.append((float(k), float(f)))
-    return np.array(pts, float).reshape(-1, 2)
+        parts.setdefault(int(float(z)) if z not in (None, "") else 1, []).append((float(k), float(f)))
+    return [np.array(v, float) for _, v in sorted(parts.items())]
 
 
-def polygon_weight(poly: np.ndarray, mirror: bool = True, smooth_bins: int = 3):
-    """A weight function (f, k) -> pass weight for a reject polygon drawn in (k per 1000 units, f Hz): 0 inside
-    (and inside its mirror image at -k), 1 outside, edges smoothed over a few bins (no ringing)."""
+def polygon_weight(polys: list[np.ndarray], mirror: bool = True, smooth_bins: int = 3):
+    """A weight function (f, k) -> pass weight for a reject zone of one or more polygons (any shape - box, lasso)
+    drawn in (k per 1000 units, f Hz): 0 inside any of them (and inside their mirror images at -k), 1 outside,
+    edges smoothed over a few bins (no ringing)."""
     from matplotlib.path import Path as _Path
-    if len(poly) < 3:
-        raise ValueError("the reject polygon needs at least 3 corners - drag a box or Shift + drag a lasso on the "
-                         "F-K plot, or type the corners in the table")
-    path = _Path(poly)
+    polys = [p for p in polys if len(p) >= 3]
+    if not polys:
+        raise ValueError("the reject zone needs a polygon of at least 3 corners - drag a box or Shift + drag a lasso "
+                         "on the F-K plot, or type the corners in the table")
+    paths = [_Path(p) for p in polys]
 
     def weight(f: np.ndarray, k: np.ndarray) -> np.ndarray:
         kk, ff = np.meshgrid(k * 1000.0, f)
         pts = np.column_stack([kk.ravel(), ff.ravel()])
-        inside = path.contains_points(pts)
-        if mirror:
-            inside |= path.contains_points(np.column_stack([-kk.ravel(), ff.ravel()]))
+        inside = np.zeros(len(pts), bool)
+        for path in paths:
+            inside |= path.contains_points(pts)
+            if mirror:
+                inside |= path.contains_points(np.column_stack([-kk.ravel(), ff.ravel()]))
         w = 1.0 - inside.reshape(kk.shape).astype(float)
         if smooth_bins > 1:                              # soft edges: a short running mean in f and in k
             ker = np.ones(smooth_bins) / smooth_bins
@@ -290,9 +295,11 @@ def plot_fk(shown, f_lim: float, which: str = "before", fan=None, poly=None, mir
         zone = f"solid: reject velocity {fan[0]:g}, dashed: pass velocity {fan[1]:g}"
     else:
         zone = "red: the reject polygon" + (" (and its mirror at -k)" if mirror else "")
-    if poly is not None and len(poly) >= 3:
+    for part in (poly or []):
+        if len(part) < 3:
+            continue
         for sgn in ((1, -1) if mirror else (1,)):
-            closed = np.vstack([poly, poly[:1]])
+            closed = np.vstack([part, part[:1]])
             ax.plot(sgn * closed[:, 0], closed[:, 1], color="#ff4d4d", linewidth=1.6)
     ax.set_xlim(k[0] * 1000, k[-1] * 1000)
     ax.set_ylim(0, f_lim)
@@ -302,8 +309,9 @@ def plot_fk(shown, f_lim: float, which: str = "before", fan=None, poly=None, mir
     cax = fig.add_axes([0.935, 0.10, 0.012, 0.78])
     fig.colorbar(im, cax=cax).set_label("dB re input peak", color=INK_2)
     what = {"before": "BEFORE the filter", "after": "AFTER the filter", "removed": "REMOVED noise"}[which]
-    fig.suptitle(f"F-K spectrum {what} - longest receiver line ({n} traces, spacing {dx:g}) - {zone}",
-                 x=0.06, y=0.97, ha="left", fontsize=12, color=INK)
+    title = (f"F-K spectrum {what} - longest receiver line ({n} traces, spacing {dx:g}) - {zone}" if figsize[0] >= 10
+             else f"F-K {what.lower()} ({n} traces, spacing {dx:g})\n{zone}")
+    fig.suptitle(title, x=0.06, y=0.985, ha="left", va="top", fontsize=11 if figsize[0] < 10 else 12, color=INK)
     return fig
 
 

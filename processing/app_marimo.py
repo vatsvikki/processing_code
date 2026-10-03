@@ -877,8 +877,18 @@ def _(Path, coerce, ctx, default_for, ffid_slider, form, func, grid_rev, last, l
                     _o.figure.set_dpi(90)
                     fk_select = mo.ui.matplotlib(_o.figure.axes[0], debounce=True)
                     last["fk_slot"] = _extra.get("view", 0) - 1        # the flow place of the F-K Filter shown
-                    _blocks.append(mo.vstack([mo.md(f"#### {_o.title}"), fk_select], gap=0.3))
+                    # side by side with the gather filtered with this zone: draw -> it is applied on release
+                    _live = next((_q for _q in _outs if _q.kind == "image" and _q.pick == "fk_live"), None)
+                    _half = {"flex": "1 1 0", "min-width": "0"}
+                    _blocks.append(mo.hstack(
+                        [mo.vstack([mo.md(f"#### {_o.title}"), fk_select], gap=0.3).style(_half)]
+                        + ([mo.vstack([mo.md(f"#### {_live.title}"),
+                                       mo.image(_live.content, style={"width": "100%", "height": "auto"})],
+                                      gap=0.3).style(_half)] if _live is not None else []),
+                        gap=1, align="start", widths="equal"))
                     continue
+                if _o.kind == "image" and _o.pick == "fk_live":
+                    continue                                        # (drawn next to the F-K domain above)
                 if _o.kind == "image" and _o.zoom and _o.figure is not None and zoom_select is None:
                     # the gather: drag a box on it to zoom (x = trace position, y = time in ms)
                     _o.figure.set_dpi(90)          # on-screen size only; saved figures use their own dpi
@@ -896,10 +906,10 @@ def _(Path, coerce, ctx, default_for, ffid_slider, form, func, grid_rev, last, l
 
 
 @app.cell
-def _(fk_select, last, pipe_mem, set_pipe_version, set_save_msg):
+def _(fk_select, last, pipe_mem, set_pipe_version, set_run_version, set_save_msg):
     # ---- FK PICK: a box or lasso drawn on the F-K domain plot becomes the F-K Filter's reject polygon ----
     # (its corners go into the function's polygon table, the reject zone switches to "Manual polygon"; ▶ applies it)
-    from functions.noise import F_COL as _F_COL, K_COL as _K_COL
+    from functions.noise import F_COL as _F_COL, K_COL as _K_COL, Z_COL as _Z_COL
     from functions.steps import FK_MODES as _FK_MODES
     _sel = fk_select.value if fk_select is not None else None
     _slot = last.get("fk_slot")
@@ -911,13 +921,19 @@ def _(fk_select, last, pipe_mem, set_pipe_version, set_save_msg):
         _ks, _fs = [_p[0] for _p in _pts], [_p[1] for _p in _pts]
         if len(_pts) >= 3 and max(_ks) - min(_ks) > 1e-3 and max(_fs) - min(_fs) > 0.2:     # not a plain click
             _key = (_slot, "fk_filter_step")
-            pipe_mem["params"][_key] = {**pipe_mem["params"].get(_key, {}), "fk_mode": _FK_MODES[1],
-                                        "fk_polygon": [{_K_COL: round(_k, 4), _F_COL: round(max(_f, 0.0), 2)}
-                                                       for _k, _f in _pts]}
-            pipe_mem["expand"] = str(_slot)          # open its parameters: the corners are shown there
-            set_save_msg(f"F-K reject polygon of {len(_pts)} corners taken from your drawing - press ▶ beside "
-                         f"F-K Filter to apply it.")
+            _old = pipe_mem["params"].get(_key, {})
+            _rows = list(_old.get("fk_polygon") or []) if (_old.get("fk_add") and _old.get("fk_mode") == _FK_MODES[1]) else []
+            _zone = max([int(float(_r.get(_Z_COL) or 1)) for _r in _rows] or [0]) + 1
+            _rows += [{_Z_COL: _zone, _K_COL: round(_k, 4), _F_COL: round(max(_f, 0.0), 2)} for _k, _f in _pts]
+            pipe_mem["params"][_key] = {**_old, "fk_mode": _FK_MODES[1], "fk_polygon": _rows}
+            # applied at once: run the flow up to the F-K Filter again (the gather beside the F-K plot shows the result)
+            _labels = pipe_mem["slots"]
+            if _slot < len(_labels):
+                pipe_mem["run_to"] = _slot + 1
+                pipe_mem["view"] = f"{_slot + 1}. {_labels[_slot]}"
+            set_save_msg(f"F-K reject zone {_zone} ({len(_pts)} corners) taken from your drawing and applied.")
             set_pipe_version(lambda n: n + 1)
+            set_run_version(lambda n: n + 1)
     return
 
 

@@ -333,10 +333,13 @@ column.
 **Two ways to set the reject zone** (*Reject zone*):
 
 - **Velocity fan (from the inputs)** - everything slower than *Reject below*, with a taper up to *Pass above*.
-- **Manual polygon (drawn on the F-K plot)** - after ▶, the **F-K domain** plot is shown below the gather: **drag a
-  box**, or **Shift + drag a lasso** around the noise (e.g. the ground-roll cone). Its corners go into the *Reject
-  polygon corners* table and the zone switches to Manual; press **▶** to apply. The corners can also be typed or
-  corrected in the table (k in cycles per 1000 length units, f in Hz - the plot's axes). *Mirror* rejects the same
+- **Manual polygon (drawn on the F-K plot)** - after ▶, the **F-K domain** plot is shown below the gather, with the
+  shot gather filtered by the current zone right next to it. **Drag** = a box, **Shift + drag** = any shape (freehand
+  lasso) around the noise (e.g. the ground-roll cone). On release it is applied at once: the zone switches to Manual,
+  its corners go into the *Reject zone corners* table and the gather beside the plot (and all the flip-flops) show
+  the result - no ▶ needed. *Add each drawing to the zone* on: every drawing becomes one more zone (build a complex
+  shape from pieces); off: a drawing replaces the zone. The corners can also be typed or corrected in the table
+  (zone number, k in cycles per 1000 length units, f in Hz - the plot's axes; rows with the same zone = one polygon). *Mirror* rejects the same
   zone at -k too (the other side of a split spread). The polygon edges are smoothed over a few bins (no ringing).
   *F-K plots up to* sets the frequency range of the plots - lower makes low-frequency ground roll easier to draw on.
 
