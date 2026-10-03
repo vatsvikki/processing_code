@@ -436,6 +436,7 @@ def _(DOMAINS, TYPES, VEL_UNITS, load_settings, mo, re, seg):
     in_z0 = mo.ui.number(value=_s.get("in_z0", 0.0), step=0.001, label="First sample at (ms / depth unit)")
     in_len = mo.ui.dropdown(["ft", "m"], value=_s.get("in_len", "ft" if _ft else "m"), label="Depth unit")
     in_vel = mo.ui.dropdown(list(VEL_UNITS), value=_s.get("in_vel", "ft/s" if _ft else "m/s"), label="Velocity unit")
+    force_convert = mo.ui.checkbox(value=False, label="convert anyway (the values do not look like velocities)")
     mo.vstack([
         mo.md("## 3. What is in the file?  \n<span style='opacity:.7'>Guessed from the text header - check every "
               "value. The header's sample-interval field is "
@@ -444,11 +445,12 @@ def _(DOMAINS, TYPES, VEL_UNITS, load_settings, mo, re, seg):
         mo.hstack([in_dz, in_z0], justify="start", gap=1, wrap=True),
         mo.hstack([in_len, in_vel], justify="start", gap=1, wrap=True),
     ])
-    return in_domain, in_dz, in_len, in_type, in_vel, in_z0
+    return force_convert, in_domain, in_dz, in_len, in_type, in_vel, in_z0
 
 
 @app.cell(hide_code=True)
-def _(DOMAINS, in_domain, in_dz, in_len, in_type, in_vel, in_z0, mo, np, records, samples_of, seg):
+def _(DOMAINS, force_convert, in_domain, in_dz, in_len, in_type, in_vel, in_z0, mo, np, re, records, samples_of,
+      seg):
     # a quick look at the values, so a wrong unit stands out
     _rec = records(seg)
     _pick = np.linspace(0, seg["ntr"] - 1, min(seg["ntr"], 200)).astype(np.int64)
@@ -461,11 +463,33 @@ def _(DOMAINS, in_domain, in_dz, in_len, in_type, in_vel, in_z0, mo, np, records
         _warn = " ⚠ values this small look like km/s or kft/s"
     elif in_vel.value in ("km/s", "kft/s") and _lo > 100:
         _warn = " ⚠ values this large look like m/s or ft/s"
-    mo.callout(mo.md(f"**{in_type.value}** velocity in **{in_domain.value}**, {seg['ns']} samples from "
-                     f"{in_axis[0]:g} to {in_axis[-1]:g} {_unit} · values (1-99 %, 200 traces) "
-                     f"**{_lo:,.0f} – {_hi:,.0f} {in_vel.value}**{_warn}"),
-               kind="warn" if _warn else "info")
-    return (in_axis,)
+    # a velocity is positive everywhere it is defined (0 = no data); an image / a stack swings around 0
+    _live = _v[_v != 0]
+    _neg = float((_live < 0).mean()) if _live.size else 0.0
+    _what = next((l[3:].strip() for l in seg["lines"] if re.search(r"DESCRIPTION|PRODUCT|DATA TYPE", l.upper())), "")
+    _image = bool(re.search(r"\b(STACK|RTM|MIGRATED|MIGRATION STACK|AMPLITUDE|REFLECTIVITY|GATHER|IMAGE)\b",
+                            _what.upper())) and not re.search(r"VEL|VINT|VRMS", _what.upper())
+    not_velocity = _neg > 0.01 or (_live.size and float(np.median(np.abs(_live))) < 1e-6)
+    _msg = mo.callout(mo.md(f"**{in_type.value}** velocity in **{in_domain.value}**, {seg['ns']} samples from "
+                            f"{in_axis[0]:g} to {in_axis[-1]:g} {_unit} · values (1-99 %, 200 traces) "
+                            f"**{_lo:,.0f} – {_hi:,.0f} {in_vel.value}**{_warn}"),
+                      kind="warn" if _warn else "info")
+    if not_velocity:
+        _msg = mo.vstack([mo.callout(mo.md(
+            f"**This file does not look like a velocity model.** {_neg:.0%} of its samples are negative (a velocity "
+            f"is never negative) - values {_lo:,.4g} to {_hi:,.4g}."
+            + (f"  \nIts text header says: *{_what}*" if _what else "")
+            + ("  \nThat is a seismic image (amplitudes), not a velocity: converting it would give meaningless "
+               "numbers. Load the **velocity** file the migration used (interval / RMS velocity model)."
+               if _image or _neg > 0.2 else "")
+            + "  \nPreview and writing are stopped - tick *convert anyway* in step 3 only if you are sure."),
+            kind="danger"), force_convert])
+    elif _image:
+        _msg = mo.vstack([_msg, mo.callout(mo.md(f"The text header describes this file as *{_what}* - check that it "
+                                                 "is a velocity."), kind="warn")])
+    blocked = bool(not_velocity and not force_convert.value)
+    _msg
+    return blocked, in_axis
 
 
 @app.cell(hide_code=True)
@@ -606,9 +630,10 @@ def _(grid, mo):
 
 
 @app.cell(hide_code=True)
-def _(convert, il, in_axis, in_type, in_unit, in_vel, mo, np, out_axis, out_type, out_unit, out_vel, plt, pv_il,
-      pv_xl, records, samples_of, seg, spec, time, xl):
+def _(blocked, convert, il, in_axis, in_type, in_unit, in_vel, mo, np, out_axis, out_type, out_unit, out_vel, plt,
+      pv_il, pv_xl, records, samples_of, seg, spec, time, xl):
     # one inline, input and output, and one trace's functions
+    mo.stop(blocked, mo.callout(mo.md("Not a velocity file - see step 3."), kind="danger"))
     _sel = np.flatnonzero(il == int(pv_il.value))
     mo.stop(len(_sel) == 0, mo.callout(mo.md(f"Inline {pv_il.value} is not in the file."), kind="warn"))
     _sel = _sel[np.argsort(xl[_sel])]
@@ -697,10 +722,12 @@ def _(answers, mo, save_btn, save_settings, seg):
 
 
 @app.cell(hide_code=True)
-def _(DOMAINS, answers, convert, corner_fit, datetime, encode_samples, il, il_every, il_from, il_to, ilxl_to_xy,
+def _(DOMAINS, answers, blocked, convert, corner_fit, datetime, encode_samples, il, il_every, il_from, il_to, ilxl_to_xy,
       in_unit, mo, np, os, out_axis, out_domain, out_dz, out_fmt, out_path, out_type, out_unit, out_vel, overwrite,
       records, samples_of, save_settings, seg, spec, time, write_btn, write_xy, xl, xl_every, xl_from, xl_to):
     mo.stop(not write_btn.value)
+    mo.stop(blocked, mo.callout(mo.md("Not written: the file does not look like a velocity model (step 3)."),
+                                kind="danger"))
     _dest = os.path.abspath(os.path.expanduser(out_path.value.strip()))
     mo.stop(_dest == seg["path"], mo.callout(mo.md("The output must not be the input file."), kind="danger"))
     mo.stop(os.path.exists(_dest) and not overwrite.value,
