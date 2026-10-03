@@ -226,29 +226,32 @@ def _db(a: np.ndarray) -> np.ndarray:
     return 20 * np.log10(np.maximum(a / max(float(a.max()), 1e-30), 1e-4))
 
 
-def plot_fk(shown, v_reject: float, v_pass: float, f_lim: float, figsize=(14.0, 5.0)) -> Figure:
-    """F-K amplitude (dB) of the longest receiver line before and after, with the reject / pass velocity lines."""
+def plot_fk(shown, v_reject: float, v_pass: float, f_lim: float, which: str = "before",
+            figsize=(14.0, 6.0)) -> Figure:
+    """F-K amplitude (dB) of the longest receiver line, before or after the filter (same scale, so the two flip-flop),
+    with the reject (solid) / pass (dashed) velocity lines."""
     f, k, before, after, dx, n = shown
+    amp = before if which == "before" else after
+    ref = float(before.max()) or 1.0                    # both scaled to the input's peak
     fig = Figure(figsize=figsize, facecolor="white")
     sel = f <= f_lim
-    for j, (amp, title) in enumerate(((before, "Before"), (after, "After"))):
-        ax = fig.add_axes([0.06 + 0.48 * j, 0.12, 0.40, 0.74])
-        im = ax.imshow(_db(amp[sel]), aspect="auto", origin="lower", cmap="viridis", vmin=-60, vmax=0,
-                       extent=[k[0] * 1000, k[-1] * 1000, f[sel][0], f[sel][-1]])
-        for v, style in ((v_reject, "-"), (v_pass, "--")):
-            kk = np.array([0.0, f_lim / v]) * 1000
-            for sgn in (1, -1):
-                ax.plot(sgn * kk, [0, f_lim], color="white", linestyle=style, linewidth=1.2)
-        ax.set_xlim(k[0] * 1000, k[-1] * 1000)
-        ax.set_ylim(0, f_lim)
-        ax.set_xlabel("Wavenumber (cycles per 1000 length units)", color=INK_2)
-        ax.set_ylabel("Frequency (Hz)", color=INK_2)
-        ax.set_title(title, color=INK, fontsize=11, loc="left")
-        ax.tick_params(labelsize=9, colors=INK_2)
-    cax = fig.add_axes([0.945, 0.12, 0.012, 0.74])
-    fig.colorbar(im, cax=cax).set_label("dB", color=INK_2)
-    fig.suptitle(f"F-K spectrum of the longest receiver line ({n} traces, spacing {dx:g}) - solid: reject velocity "
-                 f"{v_reject:g}, dashed: pass velocity {v_pass:g}", x=0.06, y=0.97, ha="left", fontsize=12, color=INK)
+    ax = fig.add_axes([0.06, 0.10, 0.86, 0.78])
+    im = ax.imshow(20 * np.log10(np.maximum(amp[sel] / ref, 1e-4)), aspect="auto", origin="lower", cmap="viridis",
+                   vmin=-60, vmax=0, extent=[k[0] * 1000, k[-1] * 1000, f[sel][0], f[sel][-1]])
+    for v, style in ((v_reject, "-"), (v_pass, "--")):
+        kk = np.array([0.0, f_lim / v]) * 1000
+        for sgn in (1, -1):
+            ax.plot(sgn * kk, [0, f_lim], color="white", linestyle=style, linewidth=1.2)
+    ax.set_xlim(k[0] * 1000, k[-1] * 1000)
+    ax.set_ylim(0, f_lim)
+    ax.set_xlabel("Wavenumber (cycles per 1000 length units)", color=INK_2)
+    ax.set_ylabel("Frequency (Hz)", color=INK_2)
+    ax.tick_params(labelsize=9, colors=INK_2)
+    cax = fig.add_axes([0.935, 0.10, 0.012, 0.78])
+    fig.colorbar(im, cax=cax).set_label("dB re input peak", color=INK_2)
+    fig.suptitle(f"F-K spectrum {'BEFORE' if which == 'before' else 'AFTER'} the filter - longest receiver line ({n} "
+                 f"traces, spacing {dx:g}) - solid: reject velocity {v_reject:g}, dashed: pass velocity {v_pass:g}",
+                 x=0.06, y=0.97, ha="left", fontsize=12, color=INK)
     return fig
 
 

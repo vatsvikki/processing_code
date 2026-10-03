@@ -18,7 +18,7 @@ from .saving import DEFAULT_DIR
 from . import grid as grid_mod
 from .params import ANALYSIS, BAD, DEAD, DECON, DISPLAY
 from .pipeline import PipeState, step
-from .registry import Param, figure, markdown, table
+from .registry import Param, figure, flip, markdown, table
 from .segy_io import ShotGather, trace_order
 
 
@@ -134,6 +134,19 @@ def top_mute(state: PipeState, velocity: float = 12000.0, t0_ms: float = 0.0, ta
 _OUTPUTS = ["Filtered data", "Removed noise"]
 
 
+def _gather_flip(g: ShotGather, filtered: np.ndarray, what: str):
+    """Flip-flop of the shot gather before / after a noise filter and the noise it removed - all at the clip of the
+    input, so what changes between the frames is the data, not the display scaling."""
+    ref = np.abs(g.data[:, ::2])
+    clip = float(np.percentile(ref, 98)) if ref.size else 1.0
+    frames = []
+    for label, data in (("Before", g.data), ("After", filtered), ("Removed noise", g.data - filtered)):
+        sg = ShotGather(g.ffid, g.i0, np.asarray(data, np.float32), g.headers, g.dt_ms)
+        frames.append((label, plotting.plot_gather(sg, clip=clip or 1.0, fig_height=7.0,
+                                                   title=f"FFID {g.ffid} - {what} - {label.lower()} (same clip)")))
+    return flip(f"{what}: gather flip-flop (before / after / removed)", frames)
+
+
 @step("F-K Filter", "Velocity-fan filter in the frequency-wavenumber domain: removes ground roll and other slow linear "
       "noise (apparent velocities below a cut-off), one receiver line at a time.",
       params=[Param("v_reject", "Reject apparent velocities below (length unit per s)", "float", 3000.0, min=100, step=100,
@@ -158,7 +171,10 @@ def fk_filter_step(state: PipeState, v_reject: float = 3000.0, v_pass: float = 4
     figs = None
     if shown is not None:
         f_lim = min(fk_f_max * 2 if fk_f_max > 0 else 100.0, 500.0 / g.dt_ms)
-        figs = [figure("F-K spectrum", noise.plot_fk(shown, v_reject, v_pass, f_lim))]
+        figs = [flip("F-K spectrum flip-flop (before / after)",
+                     [(lab, noise.plot_fk(shown, v_reject, v_pass, f_lim, which)) for lab, which in
+                      (("Before", "before"), ("After", "after"))]),
+                _gather_flip(g, out, "F-K Filter")]
     return replace(_with_data(state, data), figs=figs), note + ("" if fk_output == _OUTPUTS[0] else " · showing the removed noise")
 
 
@@ -217,7 +233,8 @@ def radon_step(state: PipeState, radon_type: str = _RADON[0], radon_output: str 
                                                             damping_pct)
         kind = "parabolic"
     data = clean if radon_output == _OUTPUTS[0] else removed
-    figs = None if state.batch else [figure("Radon panel", noise.plot_radon(*panel, g.dt_ms, kind))]
+    figs = None if state.batch else [_gather_flip(g, clean, "Radon Filter"),
+                                     figure("Radon panel", noise.plot_radon(*panel, g.dt_ms, kind))]
     return replace(_with_data(state, data), figs=figs), note + ("" if radon_output == _OUTPUTS[0] else " · showing the removed noise")
 
 

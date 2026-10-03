@@ -52,7 +52,9 @@ class Param:
 
 @dataclass
 class Output:
-    """One result item.  kind: "markdown" | "table" | "image" | "data" (not drawn, only saved)."""
+    """One result item.  kind: "markdown" | "table" | "image" | "flip" | "data" (not drawn, only saved).
+    flip: content = [{"label", "png", "figure"}, ...] - images of the same size shown in one place, one at a time
+    (a flip-flop: tabs switch between them)."""
     kind: str
     title: str = ""
     content: Any = None              # markdown: str | image: PNG bytes | table: rows (list of dicts)
@@ -75,6 +77,11 @@ def table(title: str, columns: list[str], rows: list[dict], *, mono=(), paginate
 def data(title: str, obj: Any) -> Output:
     """Processed data a GUI does not draw but can offer to save (obj: segy_write.ProcessedShot)."""
     return Output("data", title, obj)
+
+
+def flip(title: str, frames: list[tuple[str, Any]]) -> Output:
+    """A flip-flop of figures [(label, matplotlib Figure), ...]: drawn in one place, a click switches between them."""
+    return Output("flip", title, [{"label": lab, "png": plotting.figure_to_png(fig), "figure": fig} for lab, fig in frames])
 
 
 def image(title: str, png: bytes, figure: Any = None, zoom: bool = False) -> Output:

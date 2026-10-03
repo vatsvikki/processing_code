@@ -757,6 +757,10 @@ def _(html, mo):
             _body = mo.md(o.content)
         elif o.kind == "image":
             _body = mo.image(o.content, style={"width": "100%", "height": "auto"})
+        elif o.kind == "flip":
+            # flip-flop: the frames in one place, the tabs switch between them (same size, same scaling)
+            _body = mo.ui.tabs({_fr["label"]: mo.image(_fr["png"], style={"width": "100%", "height": "auto"})
+                                for _fr in o.content})
         elif o.kind == "table" and o.paginate:
             _body = mo.vstack([mo.ui.table(
                 [{c: r.get(c, "") for c in o.columns} for r in o.content],

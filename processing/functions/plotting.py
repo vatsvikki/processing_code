@@ -76,8 +76,10 @@ def plot_gather(
     title: str | None = None,
     fig_height: float = 8.0,
     figsize: tuple[float, float] | None = None,
+    clip: float | None = None,
 ) -> Figure:
     """Shot gather as a grey-scale image; bad traces = red lines, dead = blue lines.
+    clip = a fixed amplitude clip (instead of the clip_pct percentile) - the same for gathers to be compared.
 
     trace_min/trace_max are 1-based display positions (0 = whole gather);
     t_max_ms <= 0 means 'to the end of the record'.
@@ -106,7 +108,8 @@ def plot_gather(
     if result is not None:
         flagged = result.flagged[sel]
     ref = np.abs(img[~flagged]) if (~flagged).any() else np.abs(img)
-    clip = float(np.percentile(ref[:, ::2], clip_pct)) if ref.size else 1.0
+    if clip is None:
+        clip = float(np.percentile(ref[:, ::2], clip_pct)) if ref.size else 1.0
     if not clip > 0:
         clip = float(ref.max()) if ref.size and ref.max() > 0 else 1.0
 

@@ -128,6 +128,12 @@ def save_outputs(outputs: list[Output], folder: str, stem: str, *, fmt: str = "p
                 path.write_bytes(o.content)
             else:
                 continue                                   # a bare PNG cannot become a vector file
+        elif o.kind == "flip":                             # a flip-flop: every frame, "<title>_<label>"
+            for fr in o.content:
+                path = Path(f"{_base(out_dir, stem, o.title + ' ' + fr['label'], tag)}.{fmt}")
+                fr["figure"].savefig(path, format=fmt, dpi=dpi, facecolor="white")
+                written.append(str(path))
+            continue
         elif not tables:
             continue
         elif o.kind == "table":

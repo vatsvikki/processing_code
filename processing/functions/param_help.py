@@ -337,7 +337,9 @@ what is taken away: it should hold no reflections.
 **Limits.** F-K needs the noise to be sampled finely enough: slow ground roll is aliased above
 $f = v / (2\,\Delta x)$ (e.g. 1500 ft/s on 278 ft spacing: above 2.7 Hz) and the aliased part folds into the pass
 zone. Then use **Radon Filter (Linear)**, which copes better with aliasing. The F-K spectrum (before / after, with the
-two velocity lines) of the longest line is shown below the gather.
+two velocity lines) of the longest line is shown below the gather as a **flip-flop** - click *Before* / *After* to
+switch in place (same colour scale) - and so is the shot gather: *Before* / *After* / *Removed noise*, all at the
+input's clip, so what changes between them is the data, not the display.
 """,
     "radon_step": r"""
 **What it does.** A least-squares (Hampson) Radon transform models the data as a sum of events along curves
@@ -363,7 +365,8 @@ less sharp separation. *Output: Removed noise* shows the subtracted noise - it s
 **Notes.** On a shot gather the parabolic version assumes roughly flat layers (a shot gather then looks like a CMP
 gather); multiples close to the primary moveout (small $q$) cannot be separated. A linear Radon of a long record is
 padded in time by the largest shift ($x_{max} / v_{min}$), so a lower *Slowest velocity* costs time (about 2 s per
-shot on this survey). The Radon panel with the cut line is shown below the gather.
+shot on this survey). Below the gather: a flip-flop of the shot gather (*Before* / *After* / *Removed noise*, same
+clip) and the Radon panel with the cut line.
 """,
     "bandpass_filter": r"""
 **What it does.** A zero-phase trapezoidal (Ormsby) band-pass, applied in the frequency domain so it introduces no
