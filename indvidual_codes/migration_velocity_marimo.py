@@ -209,7 +209,8 @@ def _(np):
 
     def to_interval(v, axis, vtype, domain, smooth=0, vmin_clip=1.0):
         """Velocity [ntr, ns] (m/s) on its axis (TWT s, or depth m) -> (interval velocity, TWT, depth) at every
-        sample - the interval velocity of sample i holds between samples i-1 and i. Also the count of samples where
+        sample - the interval velocity of sample i holds between samples i-1 and i (an interval-velocity input is a
+        sampled field: the velocity of each interval is the mean of its two ends - harmonic in depth). Also the count of samples where
         Dix / the derivative gave an impossible (negative) value, clipped."""
         v = np.maximum(np.asarray(v, np.float64), vmin_clip)
         q = np.asarray(axis, np.float64)
@@ -217,8 +218,9 @@ def _(np):
         bad = 0
         if domain == DOMAINS[0]:                               # time domain: q = TWT
             t = np.broadcast_to(q, v.shape)
-            if vtype == "Interval":
+            if vtype == "Interval":                            # a sampled field: the mean of the interval's ends
                 vint = v.copy()
+                vint[:, 1:] = 0.5 * (v[:, :-1] + v[:, 1:])
             elif vtype == "RMS":                               # Dix: Vint^2 = d(Vrms^2 t) / dt
                 vint2 = np.empty_like(v)
                 vint2[:, 0] = v[:, 0] ** 2
@@ -237,8 +239,9 @@ def _(np):
             z[:, 1:] = z[:, :1] + np.cumsum(vint[:, 1:] * dq / 2, axis=1)
             return vint, np.array(t), z, bad
         z = np.broadcast_to(q, v.shape)                        # depth domain: q = depth
-        if vtype == "Interval":
-            vint = v.copy()
+        if vtype == "Interval":                                # a sampled field: the harmonic mean of the interval's
+            vint = v.copy()                                    # ends (= the trapezoid rule on slowness)
+            vint[:, 1:] = 2.0 / (1.0 / v[:, :-1] + 1.0 / v[:, 1:])
         elif vtype == "Average":                               # t = 2 z / Vavg -> Vint = 2 dz / dt
             tt = 2 * z / v
             vint = np.empty_like(v)
