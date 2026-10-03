@@ -13,8 +13,9 @@ def _(mo):
     trace gets the time-depth relation of the velocity trace at its position, and its amplitudes are mapped onto a
     regular time axis (with an anti-alias filter).
 
-    **1.** Depth image &nbsp;→&nbsp; **2.** Velocity model &nbsp;→&nbsp; **3.** Velocity below the model &nbsp;→&nbsp;
-    **4.** Output time axis &nbsp;→&nbsp; **5.** Preview &nbsp;→&nbsp; **6.** Write.
+    **1.** Depth image + its corner points &nbsp;→&nbsp; **2.** Velocity model + its corner points (map, matching)
+    &nbsp;→&nbsp; **3.** Velocity below the model &nbsp;→&nbsp; **4.** Output time axis &nbsp;→&nbsp;
+    **5.** Plot any inline / crossline in depth and time &nbsp;→&nbsp; **6.** Write.
     Answers are saved per image file (`depth_to_time_settings.json`).
 
     This is a **depth-to-time stretch of the depth image**, not a new time migration: the imaging stays that of the
@@ -282,6 +283,69 @@ def _(np):
 
 
 @app.cell
+def _(np, re):
+    # ---- corner points: text-header parsing and the (IL, XL) <-> (X, Y) affine fit -------------------------------
+    def corners_from_text(lines):
+        """Grid corners written in the text header: a line with "CORNER", then "IL XL X Y" rows. [] if none."""
+        out, on = [], False
+        num = r"-?\d+(?:\.\d+)?"
+        for line in lines:
+            body = re.sub(r"^C\s*\d+\s?", "", line)
+            if "CORNER" in body.upper():
+                on = True
+            if not on:
+                continue
+            nums = re.findall(num, body.split(":")[-1])
+            if len(nums) >= 4 and re.fullmatch(r"[\s\d.\-]*", body.split(":")[-1]):
+                out.append([float(v) for v in nums[-4:]])
+            elif out:
+                break
+        return out[:8] if len(out) >= 3 else []
+
+    def fit_affine(rows):
+        """X = a0 + a1 IL + a2 XL, Y = b0 + b1 IL + b2 XL from >= 3 corner rows (least squares) - any grid rotation.
+        Returns the fit with bin sizes, azimuths and residuals, or None."""
+        pts = []
+        for r in rows or []:
+            try:
+                il, xl, x, y = (float(r[k]) for k in ("IL", "XL", "X", "Y"))
+            except (KeyError, TypeError, ValueError):
+                continue
+            pts.append((il, xl, x, y))
+        if len(pts) < 3:
+            return None
+        p = np.array(pts)
+        G = np.column_stack([np.ones(len(p)), p[:, 0], p[:, 1]])
+        if np.linalg.matrix_rank(G) < 3:
+            return None                                       # all corners on one line
+        a, *_ = np.linalg.lstsq(G, p[:, 2], rcond=None)
+        b, *_ = np.linalg.lstsq(G, p[:, 3], rcond=None)
+        res = np.hypot(G @ a - p[:, 2], G @ b - p[:, 3])
+        return {"a": a, "b": b, "rms": float(np.sqrt(np.mean(res ** 2))), "max": float(res.max()),
+                "il_bin": float(np.hypot(a[1], b[1])), "xl_bin": float(np.hypot(a[2], b[2])),
+                "il_az": float(np.degrees(np.arctan2(a[1], b[1])) % 360),     # direction of increasing IL (from north)
+                "xl_az": float(np.degrees(np.arctan2(a[2], b[2])) % 360)}
+
+    def ilxl_to_xy(fit, il, xl):
+        a, b = fit["a"], fit["b"]
+        return a[0] + a[1] * il + a[2] * xl, b[0] + b[1] * il + b[2] * xl
+
+    def xy_to_ilxl(fit, x, y):
+        """The inverse of ilxl_to_xy: (X, Y) -> fractional (IL, XL)."""
+        a, b = fit["a"], fit["b"]
+        m = np.array([[a[1], a[2]], [b[1], b[2]]])
+        rhs = np.vstack([np.asarray(x, float) - a[0], np.asarray(y, float) - b[0]])
+        il, xl = np.linalg.solve(m, rhs)
+        return il, xl
+
+    def corner_rows_of(table_value):
+        rows = table_value.to_dict("records") if hasattr(table_value, "to_dict") else list(table_value or [])
+        return rows
+
+    return corner_rows_of, corners_from_text, fit_affine, ilxl_to_xy, xy_to_ilxl
+
+
+@app.cell
 def _(Path, json):
     SETTINGS_FILE = Path(__file__).resolve().with_name("depth_to_time_settings.json")
 
@@ -340,7 +404,40 @@ def _(img_box, img_btn, load_settings, mo, re, segy_open):
 
 
 @app.cell(hide_code=True)
+def _(S, corners_from_text, header_word, img, img_il, img_xl, mo, np, records):
+    # the image's grid from its trace headers, and its corner points (text header -> saved -> trace-header corners)
+    _r = records(img)
+    img_ilv = header_word(_r, int(img_il.value), "i4", img["order"])
+    img_xlv = header_word(_r, int(img_xl.value), "i4", img["order"])
+    _sc = header_word(_r, 71, "i2", img["order"]).astype(float)
+    _f = np.where(_sc < 0, -1.0 / np.where(_sc == 0, 1, _sc), np.where(_sc > 0, _sc, 1.0))
+    img_hx = header_word(_r, 181, "i4", img["order"]) * _f
+    img_hy = header_word(_r, 185, "i4", img["order"]) * _f
+
+    def _hdr_corners():
+        rows = []
+        for a_ in (img_ilv.min(), img_ilv.max()):
+            for b_ in (img_xlv.min(), img_xlv.max()):
+                k = int(np.argmin((img_ilv - a_) ** 2 + (img_xlv - b_) ** 2))
+                rows.append({"IL": int(img_ilv[k]), "XL": int(img_xlv[k]), "X": round(float(img_hx[k]), 2),
+                             "Y": round(float(img_hy[k]), 2)})
+        return rows
+
+    _text = corners_from_text(img["lines"])
+    _src = "saved for this image" if S.get("img_corners") else ("text header" if _text else "trace headers")
+    img_corner_table = mo.ui.data_editor(
+        S.get("img_corners") or [{"IL": r[0], "XL": r[1], "X": r[2], "Y": r[3]} for r in _text] or _hdr_corners(),
+        label="Image corner points (IL, XL ↔ X, Y)")
+    mo.vstack([mo.md(f"**Image grid** (trace headers): IL {img_ilv.min()} – {img_ilv.max()}, XL {img_xlv.min()} – "
+                     f"{img_xlv.max()} · corner points from the **{_src}** - check / edit them (at least 3):"),
+               img_corner_table])
+    return img_corner_table, img_hx, img_hy, img_ilv, img_xlv
+
+
+@app.cell(hide_code=True)
 def _(DOMAINS, S, TYPES, VEL_UNITS, img_len, mo):
+    MATCHES = ["Corner points (image IL/XL -> X/Y -> velocity IL/XL)", "Same inline / crossline",
+               "Trace-header X / Y (bytes 181 / 185, scalar 71)"]
     # ---- 2. the velocity model ---------------------------------------------------------------------------------------
     vel_box = mo.ui.text(value=S.get("vel_path", ""), label="Velocity model SEG-Y (the one the depth migration used)",
                          full_width=True)
@@ -354,60 +451,120 @@ def _(DOMAINS, S, TYPES, VEL_UNITS, img_len, mo):
                               label="Velocity unit")
     vel_il = mo.ui.number(value=S.get("vel_il", 189), start=1, stop=237, label="Inline byte")
     vel_xl = mo.ui.number(value=S.get("vel_xl", 193), start=1, stop=237, label="Crossline byte")
-    match = mo.ui.dropdown(["Same inline / crossline", "Nearest X / Y (bytes 181 / 185, scalar 71)"],
-                           value=S.get("match", "Same inline / crossline"), label="Match image and velocity traces by")
+    match = mo.ui.dropdown(MATCHES, value=S.get("match", MATCHES[0]) if S.get("match") in MATCHES else MATCHES[0],
+                           label="Match image and velocity traces by")
     mo.vstack([mo.md("## 2. The velocity model"), vel_box,
                mo.hstack([vel_type, vel_domain, vel_dz, vel_z0], justify="start", gap=1, wrap=True),
                mo.hstack([vel_len, vel_unit, vel_il, vel_xl], justify="start", gap=1, wrap=True), match])
-    return match, vel_box, vel_domain, vel_dz, vel_il, vel_len, vel_type, vel_unit, vel_xl, vel_z0
+    return MATCHES, match, vel_box, vel_domain, vel_dz, vel_il, vel_len, vel_type, vel_unit, vel_xl, vel_z0
 
 
 @app.cell(hide_code=True)
-def _(DOMAINS, header_word, img, img_il, img_xl, match, mo, np, records, samples_of, segy_open, vel_box, vel_dz,
-      vel_domain, vel_il, vel_len, vel_xl, vel_z0):
-    # both files' geometry, and which velocity trace each image trace uses
+def _(DOMAINS, S, corners_from_text, header_word, mo, np, records, samples_of, segy_open, vel_box, vel_domain, vel_dz,
+      vel_il, vel_len, vel_xl, vel_z0):
+    # the velocity model's grid, values and corner points
     mo.stop(not vel_box.value.strip(), mo.md("_Type the velocity model path._"))
+    _err = ""
     try:
         vel = segy_open(vel_box.value)
     except Exception as _e:
-        mo.stop(True, mo.callout(mo.md(f"**Could not read the velocity model** - {type(_e).__name__}: {_e}"),
-                                 kind="danger"))
-    from scipy.spatial import cKDTree
-    _ri, _rv = records(img), records(vel)
-    img_ilv = header_word(_ri, int(img_il.value), "i4", img["order"])
-    img_xlv = header_word(_ri, int(img_xl.value), "i4", img["order"])
-    _vil = header_word(_rv, int(vel_il.value), "i4", vel["order"])
-    _vxl = header_word(_rv, int(vel_xl.value), "i4", vel["order"])
-    if match.value.startswith("Same"):
-        _a, _b = np.column_stack([_vil, _vxl]).astype(float), np.column_stack([img_ilv, img_xlv]).astype(float)
-    else:
-        def _xy(rec, order):
-            sc = header_word(rec, 71, "i2", order).astype(float)
-            f = np.where(sc < 0, -1.0 / np.where(sc == 0, 1, sc), np.where(sc > 0, sc, 1.0))
-            return np.column_stack([header_word(rec, 181, "i4", order) * f, header_word(rec, 185, "i4", order) * f])
-        _a, _b = _xy(_rv, vel["order"]), _xy(_ri, img["order"])
-    _dist, vel_of = cKDTree(_a).query(_b)
-    _exact = float((_dist == 0).mean())
+        vel = None
+        _err = f"{type(_e).__name__}: {_e}"
+    mo.stop(vel is None, mo.callout(mo.md(f"**Could not read the velocity model** - {_err}"), kind="danger"))
+    _r = records(vel)
+    vel_ilv = header_word(_r, int(vel_il.value), "i4", vel["order"])
+    vel_xlv = header_word(_r, int(vel_xl.value), "i4", vel["order"])
+    _sc = header_word(_r, 71, "i2", vel["order"]).astype(float)
+    _f = np.where(_sc < 0, -1.0 / np.where(_sc == 0, 1, _sc), np.where(_sc > 0, _sc, 1.0))
+    vel_hx = header_word(_r, 181, "i4", vel["order"]) * _f
+    vel_hy = header_word(_r, 185, "i4", vel["order"]) * _f
     vel_dz_val = float(vel_dz.value) if vel_dz.value else vel["dt"] / 1000.0
     vel_axis = float(vel_z0.value) + np.arange(vel["ns"]) * vel_dz_val
     _unit = "ms" if vel_domain.value == DOMAINS[0] else vel_len.value
     _pick = np.linspace(0, vel["ntr"] - 1, min(vel["ntr"], 200)).astype(np.int64)
-    _v = samples_of(vel, _rv[_pick])
+    _v = samples_of(vel, _r[_pick])
     _live = _v[_v != 0]
     _neg = float((_live < 0).mean()) if _live.size else 0.0
     _lo, _hi = (np.percentile(_live, [1, 99]) if _live.size else (0, 0))
-    _msgs = [mo.callout(mo.md(
-        f"Velocity model: **{vel['ntr']:,} traces**, {vel['ns']} samples, {vel_axis[0]:g} – {vel_axis[-1]:g} {_unit} · "
-        f"values {_lo:,.0f} – {_hi:,.0f}  \nImage traces matched: **{_exact:.0%} exactly**"
-        + ("" if _exact == 1 else f", the others to the nearest velocity trace (largest distance {_dist.max():.1f} "
-           f"{'IL/XL' if match.value.startswith('Same') else 'coordinate units'})")),
-        kind="info" if _exact > 0.5 else "warn")]
-    if _neg > 0.01:
-        _msgs.append(mo.callout(mo.md(f"**This does not look like a velocity** - {_neg:.0%} of its samples are negative. "
-                                      "Load the velocity model, not an image."), kind="danger"))
     vel_ok = _neg <= 0.01
-    mo.vstack(_msgs)
-    return img_ilv, img_xlv, vel, vel_axis, vel_of, vel_ok
+    _text = corners_from_text(vel["lines"])
+    _src = "saved" if S.get("vel_corners") else ("text header" if _text else "none found - type them")
+    vel_corner_table = mo.ui.data_editor(
+        S.get("vel_corners") or [{"IL": r[0], "XL": r[1], "X": r[2], "Y": r[3]} for r in _text]
+        or [{"IL": "", "XL": "", "X": "", "Y": ""}] * 3, label="Velocity model corner points (IL, XL ↔ X, Y)")
+    mo.vstack([
+        mo.callout(mo.md(f"Velocity model: **{vel['ntr']:,} traces**, {vel['ns']} samples, {vel_axis[0]:g} – "
+                         f"{vel_axis[-1]:g} {_unit} · values {_lo:,.0f} – {_hi:,.0f} · grid IL {vel_ilv.min()} – "
+                         f"{vel_ilv.max()}, XL {vel_xlv.min()} – {vel_xlv.max()}"), kind="info"),
+        mo.callout(mo.md(f"**This does not look like a velocity** - {_neg:.0%} of its samples are negative. Load the "
+                         "velocity model, not an image."), kind="danger") if not vel_ok else mo.md(""),
+        mo.md(f"Velocity corner points from the **{_src}** - check / edit them:"), vel_corner_table,
+    ])
+    return vel, vel_axis, vel_corner_table, vel_hx, vel_hy, vel_ilv, vel_ok, vel_xlv
+
+
+@app.cell(hide_code=True)
+def _(MATCHES, corner_rows_of, fit_affine, ilxl_to_xy, img, img_corner_table, img_hx, img_hy, img_ilv, img_xlv, match,
+      mo, np, plt, vel_corner_table, vel_hx, vel_hy, vel_ilv, vel_xlv, xy_to_ilxl):
+    # ---- corner-point fits, the map, and which velocity trace each image trace uses ---------------------------------
+    from scipy.spatial import cKDTree
+    img_corners = corner_rows_of(img_corner_table.value)
+    vel_corners = corner_rows_of(vel_corner_table.value)
+    img_fit, vel_fit = fit_affine(img_corners), fit_affine(vel_corners)
+    _msgs = []
+    for _name, _fit, _hx, _hy, _il, _xl in (("Image", img_fit, img_hx, img_hy, img_ilv, img_xlv),
+                                            ("Velocity", vel_fit, vel_hx, vel_hy, vel_ilv, vel_xlv)):
+        if _fit is None:
+            _msgs.append(f"**{_name}: the corner points do not define a grid** (need 3 corners not on one line).")
+            continue
+        _px, _py = ilxl_to_xy(_fit, _il.astype(float), _xl.astype(float))
+        _mis = np.hypot(_px - _hx, _py - _hy)
+        _msgs.append(f"**{_name}**: bin {_fit['il_bin']:.1f} × {_fit['xl_bin']:.1f}, inline direction "
+                     f"{_fit['il_az']:.1f}° · corner misfit {_fit['rms']:.2f} · trace-header X/Y vs corners: median "
+                     f"{np.median(_mis):.1f}, max {_mis.max():.1f}")
+    # matching
+    if match.value == MATCHES[0]:
+        if img_fit is None or vel_fit is None:
+            mo.stop(True, mo.callout(mo.md("  \n".join(_msgs) + "  \nMatching by corner points needs both corner "
+                                                                    "tables."), kind="danger"))
+        _x, _y = ilxl_to_xy(img_fit, img_ilv.astype(float), img_xlv.astype(float))
+        _qi, _qx = xy_to_ilxl(vel_fit, _x, _y)
+        _dist, vel_of = cKDTree(np.column_stack([vel_ilv, vel_xlv]).astype(float)).query(np.column_stack([_qi, _qx]))
+        _unit = "velocity bins"
+    elif match.value == MATCHES[1]:
+        _dist, vel_of = cKDTree(np.column_stack([vel_ilv, vel_xlv]).astype(float)).query(
+            np.column_stack([img_ilv, img_xlv]).astype(float))
+        _unit = "IL/XL"
+    else:
+        _dist, vel_of = cKDTree(np.column_stack([vel_hx, vel_hy])).query(np.column_stack([img_hx, img_hy]))
+        _unit = "coordinate units"
+    _msgs.append(f"Matching **{match.value.split(' (')[0]}**: {float((_dist < 0.5).mean()):.0%} of the image traces "
+                 f"on a velocity trace, largest distance {_dist.max():.2f} {_unit}"
+                 + (" - ⚠ part of the image is outside the velocity model" if _dist.max() > 1.5 else ""))
+    _fig, _ax = plt.subplots(figsize=(7.5, 5.5))
+    for _fit, _il, _xl, _col, _lab in ((vel_fit, vel_ilv, vel_xlv, "#2a78d6", "velocity model grid"),
+                                       (img_fit, img_ilv, img_xlv, "#e34948", "image grid")):
+        if _fit is not None:
+            _ci = np.array([_il.min(), _il.min(), _il.max(), _il.max(), _il.min()], float)
+            _cx = np.array([_xl.min(), _xl.max(), _xl.max(), _xl.min(), _xl.min()], float)
+            _ox, _oy = ilxl_to_xy(_fit, _ci, _cx)
+            _ax.plot(_ox, _oy, color=_col, lw=1.8, label=_lab)
+    for _rows, _col in ((img_corners, "#e34948"), (vel_corners, "#2a78d6")):
+        for _r in _rows:
+            try:
+                _ax.plot(float(_r["X"]), float(_r["Y"]), "o", color=_col, ms=5)
+                _ax.annotate(f"{int(float(_r['IL']))}/{int(float(_r['XL']))}", (float(_r["X"]), float(_r["Y"])),
+                             fontsize=7, xytext=(3, 3), textcoords="offset points", color=_col)
+            except (KeyError, TypeError, ValueError):
+                pass
+    _ax.set_aspect("equal")
+    _ax.ticklabel_format(useOffset=False, style="plain")
+    _ax.tick_params(labelsize=7)
+    _ax.legend(fontsize=8)
+    _ax.set_title("Grids from the corner points (labels: IL/XL)", fontsize=10)
+    _fig.tight_layout()
+    mo.vstack([mo.md("### Corner points and matching"), mo.callout(mo.md("  \n".join(_msgs)), kind="info"), _fig])
+    return img_corners, img_fit, vel_corners, vel_of
 
 
 @app.cell(hide_code=True)
@@ -476,21 +633,31 @@ def _(LEN_UNITS, S, img, img_axis_m, img_len, mo, np, records, samples_of, twt_o
 
 
 @app.cell(hide_code=True)
-def _(img_ilv, mo, np):
-    # ---- 5. preview -------------------------------------------------------------------------------------------------
-    _u = np.unique(img_ilv)
-    pv_il = mo.ui.number(value=int(_u[len(_u) // 2]), start=int(_u[0]), stop=int(_u[-1]), label="Preview inline")
-    mo.vstack([mo.md("## 5. Preview"), pv_il])
-    return (pv_il,)
+def _(img_ilv, mo):
+    # ---- 5. preview: any inline or crossline ------------------------------------------------------------------------
+    pv_kind = mo.ui.radio(["Inline", "Crossline"], value="Inline", label="Plot", inline=True)
+    mo.vstack([mo.md("## 5. Plot a line - depth and time"), pv_kind])
+    return (pv_kind,)
 
 
 @app.cell(hide_code=True)
-def _(antialias, depth_to_time, img, img_axis_m, img_ilv, img_len, img_xlv, mo, np, out_dt, out_tmax, plt, pv_il,
-      records, samples_of, time, twt_of, vel, vel_of, vel_ok):
+def _(img_ilv, img_xlv, mo, np, pv_kind):
+    _v = np.unique(img_ilv if pv_kind.value == "Inline" else img_xlv)
+    pv_line = mo.ui.slider(steps=[int(x) for x in _v], value=int(_v[len(_v) // 2]), show_value=True,
+                           include_input=True, full_width=True, debounce=True, label=f"{pv_kind.value} number")
+    pv_line
+    return (pv_line,)
+
+
+@app.cell(hide_code=True)
+def _(antialias, depth_to_time, ilxl_to_xy, img, img_axis_m, img_fit, img_ilv, img_len, img_xlv, mo, np, out_dt,
+      out_tmax, plt, pv_kind, pv_line, records, samples_of, time, twt_of, vel, vel_of, vel_ok):
     mo.stop(not vel_ok, mo.callout(mo.md("The velocity file is not a velocity (step 2)."), kind="danger"))
-    _sel = np.flatnonzero(img_ilv == int(pv_il.value))
-    mo.stop(len(_sel) == 0, mo.callout(mo.md(f"Inline {pv_il.value} is not in the image."), kind="warn"))
-    _sel = _sel[np.argsort(img_xlv[_sel])]
+    _inl = pv_kind.value == "Inline"
+    _sel = np.flatnonzero((img_ilv if _inl else img_xlv) == int(pv_line.value))
+    mo.stop(len(_sel) == 0, mo.callout(mo.md(f"{pv_kind.value} {pv_line.value} is not in the image."), kind="warn"))
+    _along = img_xlv if _inl else img_ilv
+    _sel = _sel[np.argsort(_along[_sel])]
     _t0 = time.perf_counter()
     _amp = samples_of(img, records(img)[_sel])
     _twt, _zend = twt_of(samples_of(vel, records(vel)[vel_of[_sel]]))
@@ -502,39 +669,59 @@ def _(antialias, depth_to_time, img, img_axis_m, img_ilv, img_len, img_xlv, mo, 
     _du = 0.3048 if img_len.value == "ft" else 1.0
     _zax = img_axis_m / _du
     _clip = float(np.percentile(np.abs(_amp[_live]), 98)) if len(_live) else 1.0
-    _fig, _axs = plt.subplots(1, 3, figsize=(16, 6.5), gridspec_kw={"width_ratios": [1, 1, 0.55]})
-    _x0, _x1 = img_xlv[_sel][0], img_xlv[_sel][-1]
-    _axs[0].imshow(_amp.T, aspect="auto", cmap="gray", vmin=-_clip, vmax=_clip, extent=[_x0, _x1, _zax[-1], _zax[0]])
-    _axs[0].set_title(f"Depth image - inline {pv_il.value}", fontsize=10)
-    _axs[0].set_ylabel(f"Depth ({img_len.value})", fontsize=9)
-    _axs[1].imshow(_tim.T, aspect="auto", cmap="gray", vmin=-_clip, vmax=_clip,
-                   extent=[_x0, _x1, _out_t[-1] * 1000, _out_t[0] * 1000])
-    _axs[1].set_title(f"Converted to time - inline {pv_il.value}", fontsize=10)
-    _axs[1].set_ylabel("TWT (ms)", fontsize=9)
+    _x0, _x1 = _along[_sel][0], _along[_sel][-1]
+    _xlab = "Crossline" if _inl else "Inline"
+    _fig = plt.figure(figsize=(16, 7))
+    _gs = _fig.add_gridspec(2, 3, width_ratios=[1, 1, 0.55], height_ratios=[1, 0.8])
+    _a0 = _fig.add_subplot(_gs[:, 0])
+    _a1 = _fig.add_subplot(_gs[:, 1])
+    _a2 = _fig.add_subplot(_gs[0, 2])
+    _a3 = _fig.add_subplot(_gs[1, 2])
+    _a0.imshow(_amp.T, aspect="auto", cmap="gray", vmin=-_clip, vmax=_clip, extent=[_x0, _x1, _zax[-1], _zax[0]])
+    _a0.set_title(f"Depth - {pv_kind.value.lower()} {pv_line.value}", fontsize=10)
+    _a0.set_ylabel(f"Depth ({img_len.value})", fontsize=9)
+    _a1.imshow(_tim.T, aspect="auto", cmap="gray", vmin=-_clip, vmax=_clip, extent=[_x0, _x1, _out_t[-1] * 1000, 0])
+    _a1.set_title(f"Time - {pv_kind.value.lower()} {pv_line.value}", fontsize=10)
+    _a1.set_ylabel("TWT (ms)", fontsize=9)
     _zl = float(np.median(_zend)) / _du
-    _axs[0].axhline(_zl, color="#e34948", lw=1, ls="--")
-    _tl = float(np.median(np.interp(np.median(_zend), img_axis_m, _twt[_k]))) * 1000
-    _axs[1].axhline(_tl, color="#e34948", lw=1, ls="--")
-    for _a in _axs[:2]:
-        _a.set_xlabel("Crossline", fontsize=9)
+    _tl = float(np.interp(np.median(_zend), img_axis_m, _twt[_k])) * 1000
+    _deep = _zl < _zax[-1]
+    if _deep:
+        _a0.axhline(_zl, color="#e34948", lw=1, ls="--")
+        _a1.axhline(_tl, color="#e34948", lw=1, ls="--")
+    for _a in (_a0, _a1):
+        _a.set_xlabel(_xlab, fontsize=9)
         _a.tick_params(labelsize=8)
-    _axs[2].plot(_twt[_k] * 1000, _zax, color="#2a78d6")
-    _axs[2].axhspan(_zl, _zax[-1], color="#e34948", alpha=0.08)
-    _axs[2].axhline(_zl, color="#e34948", lw=1, ls="--")
-    _axs[2].invert_yaxis()
-    _axs[2].set_xlabel("TWT (ms)", fontsize=9)
-    _axs[2].set_ylabel(f"Depth ({img_len.value})", fontsize=9)
-    _axs[2].set_title(f"Time-depth, XL {img_xlv[_sel][_k]}", fontsize=10)
-    _axs[2].tick_params(labelsize=8)
-    _axs[2].grid(alpha=0.3)
+    _a2.plot(_twt[_k] * 1000, _zax, color="#2a78d6")
+    if _deep:
+        _a2.axhspan(_zl, _zax[-1], color="#e34948", alpha=0.08)
+    _a2.invert_yaxis()
+    _a2.set_xlabel("TWT (ms)", fontsize=8)
+    _a2.set_ylabel(f"Depth ({img_len.value})", fontsize=8)
+    _a2.set_title(f"Time-depth at {_xlab.lower()} {_along[_sel][_k]}", fontsize=9)
+    _a2.tick_params(labelsize=7)
+    _a2.grid(alpha=0.3)
+    # where the line is
+    if img_fit is not None:
+        _ci = np.array([img_ilv.min(), img_ilv.min(), img_ilv.max(), img_ilv.max(), img_ilv.min()], float)
+        _cx = np.array([img_xlv.min(), img_xlv.max(), img_xlv.max(), img_xlv.min(), img_xlv.min()], float)
+        _ox, _oy = ilxl_to_xy(img_fit, _ci, _cx)
+        _a3.plot(_ox, _oy, color="#9aa3b2", lw=1.2)
+        _lx, _ly = ilxl_to_xy(img_fit, img_ilv[_sel].astype(float), img_xlv[_sel].astype(float))
+        _a3.plot(_lx, _ly, color="#e34948", lw=2.2)
+        _a3.set_aspect("equal")
+        _a3.ticklabel_format(useOffset=False, style="plain")
+        _a3.tick_params(labelsize=6)
+        _a3.set_title(f"{pv_kind.value} {pv_line.value} on the survey", fontsize=9)
+    else:
+        _a3.axis("off")
     _fig.tight_layout()
-    _deep = bool(np.median(_zend) < img_axis_m[-1])
     mo.vstack([
-        mo.md(f"{len(_sel)} traces in {_secs:.1f} s · red dashed line = end of the velocity model "
-              f"({_zl:,.0f} {img_len.value} ≈ {_tl:,.0f} ms)"),
-        mo.callout(mo.md(f"⚠ Below **{_zl:,.0f} {img_len.value}** (≈ {_tl:,.0f} ms) the times come from the choice "
-                         "in step 3, not from the velocity model - the deeper part is only as right as that "
-                         "velocity."), kind="warn") if _deep else mo.md(""),
+        mo.md(f"{len(_sel)} traces ({len(_live)} live) converted in {_secs:.1f} s"
+              + (f" · red dashed line = end of the velocity model ({_zl:,.0f} {img_len.value} ≈ {_tl:,.0f} ms)"
+                 if _deep else "")),
+        mo.callout(mo.md(f"⚠ Below **{_zl:,.0f} {img_len.value}** (≈ {_tl:,.0f} ms) the times come from the choice in "
+                         "step 3, not from the velocity model."), kind="warn") if _deep else mo.md(""),
         _fig,
     ])
     return
@@ -547,16 +734,19 @@ def _(Path, S, img, mo):
     out_path = mo.ui.text(value=S.get("out_path", str(_p.with_name(f"{_p.stem}_time.sgy"))), label="Output SEG-Y file",
                           full_width=True)
     overwrite = mo.ui.checkbox(value=False, label="overwrite if it exists")
+    write_xy = mo.ui.checkbox(value=S.get("write_xy", False),
+                              label="write CDP X / Y (bytes 181 / 185, scalar -100) from the image corner points")
     write_btn = mo.ui.run_button(label="💾 Convert and write")
-    mo.vstack([mo.md("## 6. Write the time image"), out_path, mo.hstack([overwrite, write_btn], justify="start", gap=1)])
-    return out_path, overwrite, write_btn
+    mo.vstack([mo.md("## 6. Write the time image"), out_path, write_xy,
+               mo.hstack([overwrite, write_btn], justify="start", gap=1)])
+    return out_path, overwrite, write_btn, write_xy
 
 
 @app.cell(hide_code=True)
 def _(antialias, below, datetime, depth_to_time, encode_samples, grad_len, img, img_dz, img_il, img_len, img_xl,
       img_z0, match, mo, np, os, out_dt, out_fmt, out_path, out_tmax, overwrite, records, samples_of, save_settings,
       time, twt_of, vcap, vel, vel_box, vel_domain, vel_dz, vel_il, vel_len, vel_of, vel_ok, vel_type, vel_unit,
-      vel_xl, vel_z0, vtable, write_btn):
+      vel_xl, vel_z0, vtable, write_btn, write_xy, img_corners, vel_corners, img_fit, ilxl_to_xy, img_ilv, img_xlv):
     mo.stop(not write_btn.value)
     mo.stop(not vel_ok, mo.callout(mo.md("Not written: the velocity file is not a velocity (step 2)."), kind="danger"))
     _dest = os.path.abspath(os.path.expanduser(out_path.value.strip()))
@@ -571,7 +761,10 @@ def _(antialias, below, datetime, depth_to_time, encode_samples, grad_len, img, 
         "vel_dz": vel_dz.value, "vel_z0": vel_z0.value, "vel_len": vel_len.value, "vel_unit": vel_unit.value,
         "vel_il": vel_il.value, "vel_xl": vel_xl.value, "match": match.value, "below": below.value,
         "grad_len": grad_len.value, "vcap": vcap.value, "vtable": _rows, "out_dt": out_dt.value,
-        "out_tmax": out_tmax.value, "antialias": antialias.value, "out_fmt": out_fmt.value, "out_path": out_path.value})
+        "out_tmax": out_tmax.value, "antialias": antialias.value, "out_fmt": out_fmt.value, "out_path": out_path.value,
+        "img_corners": img_corners, "vel_corners": vel_corners, "write_xy": write_xy.value})
+    mo.stop(write_xy.value and img_fit is None,
+            mo.callout(mo.md("Writing X / Y needs valid image corner points."), kind="danger"))
     _out_t = np.arange(0.0, float(out_tmax.value) + 1e-9, float(out_dt.value)) / 1000.0
     _ns = len(_out_t)
     _dtf = int(round(float(out_dt.value) * 1000))
@@ -622,6 +815,11 @@ def _(antialias, below, datetime, depth_to_time, encode_samples, grad_len, img, 
                 _hdr[:, 114:116] = np.frombuffer(_ns.to_bytes(2, "big"), np.uint8)
                 _hdr[:, 116:118] = np.frombuffer(_dtf.to_bytes(2, "big"), np.uint8)
                 _hdr[:, 108:110] = 0
+                if write_xy.value:
+                    _x, _y = ilxl_to_xy(img_fit, img_ilv[_sel].astype(float), img_xlv[_sel].astype(float))
+                    _hdr[:, 70:72] = np.frombuffer((-100).to_bytes(2, "big", signed=True), np.uint8)
+                    _hdr[:, 180:184] = np.round(_x * 100).astype(">i4").view(np.uint8).reshape(-1, 4)
+                    _hdr[:, 184:188] = np.round(_y * 100).astype(">i4").view(np.uint8).reshape(-1, 4)
                 np.hstack([_hdr, encode_samples(_out, out_fmt.value)]).tofile(_f)
                 _bar.update(increment=len(_sel))
     os.replace(_part, _dest)
