@@ -18,7 +18,7 @@ def _():
     from functions import segy_io
     from functions.param_help import FUNCTION_INFO, PARAM_INFO, WIDGET_INFO, info_text
     from functions import (DEFAULT_DIR, FORMATS, SEGY_FORMATS, BatchJob, choices_for, default_for, estimate_batch, file_context,
-                              get_categories, get_functions, get_steps, plot_tag, resolve_output, save_data, save_outputs)
+                              get_categories, get_functions, get_steps, plot_tag, resolve_output, save_outputs)
 
     def tip(text):
         """The (i) marker: hover it for the full explanation of the input it stands next to."""
@@ -50,7 +50,7 @@ def _():
     pipe_mem = {"slots": [], "params": {}, "view": None}
     return (BatchJob, DEFAULT_DIR, DEFAULT_FILE, FORMATS, Path, os, SEGY_FORMATS, SimpleNamespace, choices_for, default_for, estimate_batch,
             file_context, functions, get_categories, get_steps, html, info_text, jobs, last, loaded, mo, pipe_mem, plot_tag,
-            remembered, resolve_output, save_data, save_outputs, segy_io, tip, zoom_hist, FUNCTION_INFO, PARAM_INFO,
+            remembered, resolve_output, save_outputs, segy_io, tip, zoom_hist, FUNCTION_INFO, PARAM_INFO,
             WIDGET_INFO)
 
 
@@ -935,7 +935,7 @@ def _(WIDGET_INFO, mo, remembered, set_zoom_version, zoom_hist):
 
 
 @app.cell
-def _(BatchJob, DEFAULT_DIR, FORMATS, Path, SEGY_FORMATS, SimpleNamespace, WIDGET_INFO, ctx, jobs, last, mo, path_input, resolve_output, save_data,
+def _(BatchJob, DEFAULT_DIR, FORMATS, Path, SEGY_FORMATS, WIDGET_INFO, ctx, jobs, last, mo, os, path_input, resolve_output,
        save_outputs, set_job_version, set_save_msg, tip):
     # ---- Save: writes the figures (and optionally tables) currently shown ----
     save_dir = mo.ui.text(value=DEFAULT_DIR, label="Folder for figures, tables and single-shot files " + tip(WIDGET_INFO["save_dir"]),
@@ -963,22 +963,6 @@ def _(BatchJob, DEFAULT_DIR, FORMATS, Path, SEGY_FORMATS, SimpleNamespace, WIDGE
 
     save_button = mo.ui.button(label="💾  Save figures", kind="success", tooltip=WIDGET_INFO["save_button"], on_click=_save)
 
-    # the processed data itself (the shot on screen) as a SEG-Y file
-    save_data_fmt = mo.ui.dropdown(options=list(SEGY_FORMATS), value="ibm", label="Sample format " + tip(WIDGET_INFO["save_data_fmt"]))
-
-    def _save_data(_):
-        if not any(_o.kind == "data" for _o in last.get("outs") or []):
-            set_save_msg("This function has no processed data to save.")
-            return
-        try:
-            _paths = save_data(last["outs"], save_dir.value, last["stem"], fmt=save_data_fmt.value, tag=last.get("tag", ""))
-            set_save_msg("Saved SEG-Y:  \n" + "  \n".join(f"`{_p}`" for _p in _paths))
-        except Exception as _e:
-            set_save_msg(f"**Save failed - {type(_e).__name__}:** {_e}")
-
-    save_data_button = mo.ui.button(label="💾  Save data (SEG-Y)", kind="success", tooltip=WIDGET_INFO["save_data_button"],
-                                    on_click=_save_data)
-
     # the same flow on EVERY shot of the file (or an FFID range), written as one SEG-Y while it runs
     _lo, _hi = (ctx.ffids[0], ctx.ffids[-1]) if ctx is not None else (0, 0)
     batch_from = mo.ui.number(start=_lo, stop=_hi, step=1, value=_lo, label="From FFID " + tip(WIDGET_INFO["batch_from"]), debounce=True)
@@ -989,9 +973,9 @@ def _(BatchJob, DEFAULT_DIR, FORMATS, Path, SEGY_FORMATS, SimpleNamespace, WIDGE
     _default_out = str(_src.parent / f"{_src.stem}_processed.sgy")
     batch_out = mo.ui.text(value=_default_out, label="Output SEG-Y file " + tip(WIDGET_INFO["batch_out"]),
                             full_width=True)
-    batch_overwrite = mo.ui.checkbox(value=True, label="overwrite if the file exists " + tip(WIDGET_INFO["batch_overwrite"]))
     import json as _json
-    from functions.cdp_flow import processed_path as _processed_path, processed_ready as _processed_ready, split_flow as _split_flow
+    from functions.cdp_flow import (processed_file as _processed_file, processed_path as _processed_path,
+                                    processed_ready as _processed_ready, split_flow as _split_flow)
     from functions.pipeline import get_step as _get_step
 
     _cdp_keys = ("nmo_correction_step", "cdp_stack_step")
@@ -1036,6 +1020,33 @@ def _(BatchJob, DEFAULT_DIR, FORMATS, Path, SEGY_FORMATS, SimpleNamespace, WIDGE
         return _json.dumps([str(path_input.value), _t, int(batch_from.value or _lo), int(batch_to.value or _hi),
                            batch_fmt.value, _out], sort_keys=True, default=str)
 
+    def _free_name(_out):
+        # <name>_2.sgy, <name>_3.sgy ... : the first that does not exist yet
+        _p = Path(_out)
+        _n = 2
+        while (_p.parent / f"{_p.stem}_{_n}{_p.suffix}").exists():
+            _n += 1
+        return str(_p.parent / f"{_p.stem}_{_n}{_p.suffix}")
+
+    def _launch(_path, _t, _out, _title, overwrite):
+        _cur = jobs.get("current")
+        if _cur is not None and _cur.running:          # the newest ▶ Run flow wins
+            _cur.cancel()
+            _cur.join(10)
+        try:
+            _job = BatchJob(_path, _t, _out, fmt=batch_fmt.value, ffid_from=int(batch_from.value or _lo),
+                            ffid_to=int(batch_to.value or _hi), overwrite=overwrite)
+        except Exception as _e:
+            return f"🌐 **Not run on the whole data - {type(_e).__name__}:** {_e}"
+        _job.title = _title
+        _job.key = _key(_t, _out) if _out else ""
+        jobs["current"] = _job.start()
+        jobs["current_kind"] = "save"
+        jobs["announced"] = None
+        set_job_version(lambda v: v + 1)
+        return (f"🌐 Running the flow **{_job.title}** on the whole data (FFID {_job.ffid_from} – {_job.ffid_to}) -> "
+                f"`{_out or 'output/flows'}` - progress and Cancel in the card at the bottom right.")
+
     def start_whole(_path, _steps, _k):
         """Run the flow up to function _k (all of it when _k is its length) on the whole data, in the background.
         Returns a line for the panel (None when there is nothing to say)."""
@@ -1060,24 +1071,35 @@ def _(BatchJob, DEFAULT_DIR, FORMATS, Path, SEGY_FORMATS, SimpleNamespace, WIDGE
             # a run that already covers this (same first functions, same settings) goes on
             if _cur.path == str(_path).strip() and _cur.steps[:len(_t)] == _t and (_out is None or _cur.out_path == _out):
                 return f"🌐 Already running on the whole data ({_cur.title}) - see the card at the bottom right."
-            _cur.cancel()
-            _cur.join(10)
+        _a, _b = int(batch_from.value or _lo), int(batch_to.value or _hi)
         _done = jobs.setdefault("products", {})
-        if _out is not None and _mtime(_out) is not None and _done.get(_key(_t, _out)) == _mtime(_out):
+        if _out is not None and _mtime(_out) is not None and (
+                _done.get(_key(_t, _out)) == _mtime(_out)
+                or (not _split_flow(_t)[1] and _processed_file(_processed_path(str(_path), _t, _a, _b)) == _out)):
             return f"🌐 Up to **{_name}** was already run on the whole data with these settings: `{_out}`"
-        try:
-            _job = BatchJob(str(_path), _t, _out, fmt=batch_fmt.value, ffid_from=int(batch_from.value or _lo),
-                            ffid_to=int(batch_to.value or _hi), overwrite=bool(batch_overwrite.value))
-        except Exception as _e:
-            return f"🌐 **Not run on the whole data - {type(_e).__name__}:** {_e}"
-        _job.title = ("whole flow" if _final else f"up to {_name}") + ("" if _out else " (kept for the next functions)")
-        _job.key = _key(_t, _out) if _out else ""
-        jobs["current"] = _job.start()
-        jobs["current_kind"] = "save"
-        jobs["announced"] = None
+        _title = ("whole flow" if _final else f"up to {_name}") + ("" if _out else " (kept for the next functions)")
+        if _out is not None and os.path.exists(_out):
+            # the file is there (another flow, other settings): the user decides - overwrite it or a new name
+            jobs["pending"] = {"path": str(_path), "steps": _t, "out": _out, "title": _title, "new": _free_name(_out)}
+            return (f"🌐 The output file already exists: `{_out}`. Choose **Overwrite** or **Save as a new name** in the "
+                    "Flow card (under ▶ Run flow) - or type another name under 🌐 Whole data and press ▶ Run flow again.")
+        jobs.pop("pending", None)
+        return _launch(str(_path), _t, _out, _title, overwrite=False)
+
+    def _resolve_pending(_choice):
+        _p = jobs.pop("pending", None)
+        if _p is not None and _choice != "cancel":
+            _msg = _launch(_p["path"], _p["steps"], _p["out"] if _choice == "overwrite" else _p["new"], _p["title"],
+                           overwrite=_choice == "overwrite")
+            set_save_msg(_msg.replace("🌐 ", ""))
         set_job_version(lambda v: v + 1)
-        return (f"🌐 Running the flow **{_job.title}** on the whole data (FFID {_job.ffid_from} – {_job.ffid_to}) - "
-                "progress and Cancel in the card at the bottom right. Steps already run on the whole data are reused.")
+
+    exists_overwrite = mo.ui.button(label="⚠  Overwrite", kind="danger", tooltip=WIDGET_INFO["exists_overwrite"],
+                                    on_click=lambda _: _resolve_pending("overwrite"))
+    exists_rename = mo.ui.button(label="💾  Save as a new name", kind="success", tooltip=WIDGET_INFO["exists_rename"],
+                                 on_click=lambda _: _resolve_pending("rename"))
+    exists_cancel = mo.ui.button(label="✕  Cancel", tooltip=WIDGET_INFO["exists_cancel"],
+                                 on_click=lambda _: _resolve_pending("cancel"))
 
     def whole_status(_path, _steps, _k):
         """'⏳' running, '✓' done on the whole data with these settings, '' not (yet) - for function _k of the flow."""
@@ -1103,8 +1125,8 @@ def _(BatchJob, DEFAULT_DIR, FORMATS, Path, SEGY_FORMATS, SimpleNamespace, WIDGE
             _cur.cancel()
 
     batch_cancel = mo.ui.button(label="✖  Cancel", kind="danger", tooltip=WIDGET_INFO["batch_cancel"], on_click=_cancel_batch)
-    return (batch_cancel, batch_fmt, batch_from, batch_out, batch_overwrite, batch_to, start_whole, whole_status,
-            save_button, save_data_button, save_data_fmt, save_dir, save_dpi, save_fmt, save_tables)
+    return (batch_cancel, batch_fmt, batch_from, batch_out, batch_to, exists_cancel, exists_overwrite, exists_rename,
+            start_whole, whole_status, save_button, save_dir, save_dpi, save_fmt, save_tables)
 
 
 @app.cell
@@ -1187,12 +1209,13 @@ def _(WIDGET_INFO, batch_cancel, job_refresh, job_version, jobs, mo, os, set_job
 
 
 @app.cell
-def _(SimpleNamespace, FUNCTION_INFO, batch_fmt, batch_from, batch_out, batch_overwrite, batch_to, ctx, ctx_error, job_version,
+def _(FUNCTION_INFO, Path, batch_fmt, batch_from, batch_out, batch_to, ctx, ctx_error, job_version, jobs,
+       exists_cancel, exists_overwrite, exists_rename,
        whole_status,
        grid_msg, grid_reset, survey_grid,
        estimate_batch, ffid_slider, flow_add, flow_toggle, form, func, last, live, live_display, load_button,
        mo, not_loaded, path_input, pipe_cards, pipe_down, pipe_remove, pipe_run, run_all, pipe_slots, pipe_steps, pipe_up,
-       pipe_view, right, right_top, save_button, save_data_button, save_data_fmt, save_dir, save_dpi,
+       pipe_view, right, right_top, save_button, save_dir, save_dpi,
        save_fmt, save_msg, save_tables, tip, tool_page, topbar, zoom_back, zoom_reset):
     # ---- page layout: header, category toolbar, parameter cards left, figure + results right ----
     _card = {
@@ -1250,6 +1273,16 @@ def _(SimpleNamespace, FUNCTION_INFO, batch_fmt, batch_from, batch_out, batch_ov
                 _flow.append(pipe_cards[str(_i)])
         _flow.append(mo.hstack([flow_toggle] + ([run_all] if run_all is not None and pipe_slots.value else []),
                                justify="start", gap=0.6))
+        _pending = jobs.get("pending")
+        if _pending:
+            # ▶ Run flow found its output file already there: overwrite it, or write <name>_2.sgy instead
+            _flow.append(mo.vstack([
+                mo.md(f"⚠ **The output file already exists:** `{_pending['out']}`  \n"
+                      f"Overwrite it, or save as `{Path(_pending['new']).name}`? (Or type another name under 🌐 Whole "
+                      "data and press ▶ Run flow again.)").style({"overflow-wrap": "anywhere"}),
+                mo.hstack([exists_overwrite, exists_rename, exists_cancel], justify="start", gap=0.6, wrap=True),
+            ], gap=0.5).style({"border": "1px solid #c98a1b", "border-left": "6px solid #c98a1b", "border-radius": "10px",
+                               "padding": "10px 12px", "background": "rgba(201,138,27,.08)"}))
         if pipe_slots.value and ctx is not None:
             # where / on which shots the whole-data runs of the ▶ buttons write
             try:
@@ -1265,7 +1298,7 @@ def _(SimpleNamespace, FUNCTION_INFO, batch_fmt, batch_from, batch_out, batch_ov
                       "/ the stack when the flow ends with NMO Correction / CDP Stack. 🌐✓ = done on the whole data "
                       "with these settings.</span>"),
                 batch_out,
-                mo.hstack([batch_from, batch_to, batch_fmt, batch_overwrite], justify="start", align="end", gap=1.2, wrap=True),
+                mo.hstack([batch_from, batch_to, batch_fmt], justify="start", align="end", gap=1.2, wrap=True),
                 mo.md(f"<span {_muted}>{_est_txt}</span>"),
             ], gap=0.5)}))
         if flow_add is not None:
@@ -1320,17 +1353,14 @@ def _(SimpleNamespace, FUNCTION_INFO, batch_fmt, batch_from, batch_out, batch_ov
                 gap=0.6,
             ).style(_card)
         )
-    _save_card = None                       # 💾 Save this shot (+ 🌐 Whole data): shown at the BOTTOM, after the results
-    if last.get("outs"):
-        _shot = next((_o.content for _o in last["outs"] if _o.kind == "data"), None)
-        _has_data = _shot is not None
+    _save_card = None                       # 💾 Save figures: shown at the BOTTOM, after the results (the whole data is
+    if last.get("outs"):                    # written by ▶ Run flow of the Flow card)
         _save_card = (
             mo.vstack(
                 [
-                    mo.md("#### 💾 Save this shot"),
+                    mo.md("#### 💾 Save figures"),
                     mo.hstack(
-                        [save_button, save_fmt, save_dpi, save_tables]
-                        + ([save_data_button, save_data_fmt] if _has_data else []),
+                        [save_button, save_fmt, save_dpi, save_tables],
                         justify="start", align="end", gap=1.2, wrap=True,
                     ),
                     save_dir,

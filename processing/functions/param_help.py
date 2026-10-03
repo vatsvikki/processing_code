@@ -209,9 +209,11 @@ WIDGET_INFO: dict[str, str] = {
                    "so saving with other settings never overwrites the earlier image.",
     "save_data_fmt": "Sample format of the SEG-Y file written for the shot on screen: ibm = 4-byte IBM float (as the input "
                      "usually is), ieee = 4-byte IEEE float.",
-    "save_data_button": "Writes the processed shot on screen (for the Pipeline: the stage chosen in 'View stage') as a SEG-Y "
-                        "file: the source's EBCDIC / binary headers, and the source 240-byte trace header of every surviving "
-                        "trace with the processed samples. The processing steps are noted on text-header cards C37-C40.",
+    "exists_overwrite": "Replace the existing output file with this run's result (the old file is gone once the run "
+                        "finishes; a cancelled run leaves it as it was).",
+    "exists_rename": "Keep the existing file and write this run's result next to it as <name>_2.sgy (or _3, _4 ... - the "
+                     "first name not taken).",
+    "exists_cancel": "Do not run - e.g. to type another name under 🌐 Whole data first.",
 }
 
 
