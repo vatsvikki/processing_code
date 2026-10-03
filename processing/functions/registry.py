@@ -64,6 +64,8 @@ class Output:
     figure: Any = None               # image only: the matplotlib Figure, so it can be saved as PDF / SVG / any dpi
     zoom: bool = False               # image only: a gather (x = trace position, y = time ms) a GUI may let the user
                                      # box-select to set trace_min / trace_max / t_min_ms / t_max_ms
+    pick: str = ""                   # image only: "fk" = an F-K plot on which a GUI lets the user draw (box / lasso)
+                                     # the F-K Filter's reject polygon (x = k per 1000 units, y = f Hz)
 
 
 def markdown(title: str, text: str) -> Output:

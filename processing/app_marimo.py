@@ -803,7 +803,7 @@ def _(Path, coerce, ctx, default_for, ffid_slider, form, func, grid_rev, last, l
         _form_vals = form.value if form.value is not None else (form.element.value if func.autorun else None)
 
     last.clear()
-    zoom_select, right_top = None, None
+    zoom_select, right_top, fk_select = None, None, None
     if func.kind == "loader":
         # Load Data: what the last load produced (the work itself is done by the loader cell, with its progress bar)
         if loaded["error"]:
@@ -872,6 +872,13 @@ def _(Path, coerce, ctx, default_for, ffid_slider, form, func, grid_rev, last, l
             for _o in _outs:
                 if _o.kind == "data":                  # processed data: only offered by the Save data button
                     continue
+                if _o.kind == "image" and _o.pick == "fk" and _o.figure is not None and fk_select is None:
+                    # the F-K Filter's F-K domain: a box / lasso drawn on it becomes the reject polygon (FK PICK cell)
+                    _o.figure.set_dpi(90)
+                    fk_select = mo.ui.matplotlib(_o.figure.axes[0], debounce=True)
+                    last["fk_slot"] = _extra.get("view", 0) - 1        # the flow place of the F-K Filter shown
+                    _blocks.append(mo.vstack([mo.md(f"#### {_o.title}"), fk_select], gap=0.3))
+                    continue
                 if _o.kind == "image" and _o.zoom and _o.figure is not None and zoom_select is None:
                     # the gather: drag a box on it to zoom (x = trace position, y = time in ms)
                     _o.figure.set_dpi(90)          # on-screen size only; saved figures use their own dpi
@@ -885,7 +892,33 @@ def _(Path, coerce, ctx, default_for, ffid_slider, form, func, grid_rev, last, l
             right = mo.vstack(_blocks, gap=1.5).style({"min-width": "0", "max-width": "100%"})
         except Exception as _e:  # show the problem instead of a stack trace
             right = mo.callout(mo.md(f"**{type(_e).__name__}:** {_e}"), kind="danger")
-    return right, right_top, zoom_select
+    return fk_select, right, right_top, zoom_select
+
+
+@app.cell
+def _(fk_select, last, pipe_mem, set_pipe_version, set_save_msg):
+    # ---- FK PICK: a box or lasso drawn on the F-K domain plot becomes the F-K Filter's reject polygon ----
+    # (its corners go into the function's polygon table, the reject zone switches to "Manual polygon"; ▶ applies it)
+    from functions.noise import F_COL as _F_COL, K_COL as _K_COL
+    from functions.steps import FK_MODES as _FK_MODES
+    _sel = fk_select.value if fk_select is not None else None
+    _slot = last.get("fk_slot")
+    if _sel and _slot is not None and _slot >= 0:
+        if hasattr(_sel, "x_min"):
+            _pts = [(_sel.x_min, _sel.y_min), (_sel.x_max, _sel.y_min), (_sel.x_max, _sel.y_max), (_sel.x_min, _sel.y_max)]
+        else:
+            _pts = [(float(_v[0]), float(_v[1])) for _v in _sel.vertices]
+        _ks, _fs = [_p[0] for _p in _pts], [_p[1] for _p in _pts]
+        if len(_pts) >= 3 and max(_ks) - min(_ks) > 1e-3 and max(_fs) - min(_fs) > 0.2:     # not a plain click
+            _key = (_slot, "fk_filter_step")
+            pipe_mem["params"][_key] = {**pipe_mem["params"].get(_key, {}), "fk_mode": _FK_MODES[1],
+                                        "fk_polygon": [{_K_COL: round(_k, 4), _F_COL: round(max(_f, 0.0), 2)}
+                                                       for _k, _f in _pts]}
+            pipe_mem["expand"] = str(_slot)          # open its parameters: the corners are shown there
+            set_save_msg(f"F-K reject polygon of {len(_pts)} corners taken from your drawing - press ▶ beside "
+                         f"F-K Filter to apply it.")
+            set_pipe_version(lambda n: n + 1)
+    return
 
 
 @app.cell

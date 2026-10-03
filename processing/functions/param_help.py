@@ -330,6 +330,16 @@ velocity, 1 above the pass velocity and a cosine taper between (no sharp edge, n
 *Filter only below* are left untouched. The filtered line is transformed back and every trace taken from its grid
 column.
 
+**Two ways to set the reject zone** (*Reject zone*):
+
+- **Velocity fan (from the inputs)** - everything slower than *Reject below*, with a taper up to *Pass above*.
+- **Manual polygon (drawn on the F-K plot)** - after ▶, the **F-K domain** plot is shown below the gather: **drag a
+  box**, or **Shift + drag a lasso** around the noise (e.g. the ground-roll cone). Its corners go into the *Reject
+  polygon corners* table and the zone switches to Manual; press **▶** to apply. The corners can also be typed or
+  corrected in the table (k in cycles per 1000 length units, f in Hz - the plot's axes). *Mirror* rejects the same
+  zone at -k too (the other side of a split spread). The polygon edges are smoothed over a few bins (no ringing).
+  *F-K plots up to* sets the frequency range of the plots - lower makes low-frequency ground roll easier to draw on.
+
 **Parameters.** *Reject below* - set just above the fastest noise (ground roll is typically 1000-3000 ft/s). *Pass above*
 - everything faster is fully kept; reflections have far higher apparent velocities. *Output: Removed noise* shows
 what is taken away: it should hold no reflections.
@@ -337,8 +347,8 @@ what is taken away: it should hold no reflections.
 **Limits.** F-K needs the noise to be sampled finely enough: slow ground roll is aliased above
 $f = v / (2\,\Delta x)$ (e.g. 1500 ft/s on 278 ft spacing: above 2.7 Hz) and the aliased part folds into the pass
 zone. Then use **Radon Filter (Linear)**, which copes better with aliasing. The F-K spectrum (before / after, with the
-two velocity lines) of the longest line is shown below the gather as a **flip-flop** - click *Before* / *After* to
-switch in place (same colour scale) - and so is the shot gather: *Before* / *After* / *Removed noise*, all at the
+reject zone) of the longest line is shown below the gather as a **flip-flop** - click *Before* / *After* /
+*Removed noise* to switch in place (same colour scale) - and so is the shot gather: *Before* / *After* / *Removed noise*, all at the
 input's clip, so what changes between them is the data, not the display.
 """,
     "radon_step": r"""

@@ -18,7 +18,7 @@ from .saving import DEFAULT_DIR
 from . import grid as grid_mod
 from .params import ANALYSIS, BAD, DEAD, DECON, DISPLAY
 from .pipeline import PipeState, step
-from .registry import Param, figure, flip, markdown, table
+from .registry import Output, Param, figure, flip, markdown, table
 from .segy_io import ShotGather, trace_order
 
 
@@ -147,35 +147,72 @@ def _gather_flip(g: ShotGather, filtered: np.ndarray, what: str):
     return flip(f"{what}: gather flip-flop (before / after / removed)", frames)
 
 
-@step("F-K Filter", "Velocity-fan filter in the frequency-wavenumber domain: removes ground roll and other slow linear "
-      "noise (apparent velocities below a cut-off), one receiver line at a time.",
-      params=[Param("v_reject", "Reject apparent velocities below (length unit per s)", "float", 3000.0, min=100, step=100,
-                    group="F-K filter", help="Ground roll and other slow noise travel slower than this; reflections "
-                                             "(apparent velocity far higher) are kept"),
+FK_MODES = ["Velocity fan (from the inputs)", "Manual polygon (drawn on the F-K plot)"]
+_FK_POLY_DEFAULT = [{noise.K_COL: 0.2, noise.F_COL: 0.0}, {noise.K_COL: 1.5, noise.F_COL: 0.0},
+                    {noise.K_COL: 1.5, noise.F_COL: 4.0}, {noise.K_COL: 0.2, noise.F_COL: 1.0}]
+
+
+@step("F-K Filter", "Removes ground roll and other slow linear noise in the frequency-wavenumber (F-K) domain, one "
+      "receiver line at a time: a velocity fan from the inputs, or a reject polygon drawn on the F-K plot.",
+      params=[Param("fk_mode", "Reject zone", "choice", FK_MODES[0], choices=FK_MODES, group="F-K filter",
+                    help="Velocity fan: everything slower than the reject velocity. Manual polygon: drag a box or "
+                         "Shift + drag a lasso on the 'F-K domain' plot (or type the corners) - that zone is rejected"),
+              Param("v_reject", "Reject apparent velocities below (length unit per s)", "float", 3000.0, min=100, step=100,
+                    group="F-K filter", show_if={"fk_mode": FK_MODES[0]},
+                    help="Ground roll and other slow noise travel slower than this; reflections "
+                         "(apparent velocity far higher) are kept"),
               Param("v_pass", "Pass apparent velocities above (length unit per s)", "float", 4500.0, min=100, step=100,
-                    group="F-K filter", help="Fully kept above this; a cosine taper between the two velocities avoids "
-                                             "ringing. Must be above the reject velocity"),
+                    group="F-K filter", show_if={"fk_mode": FK_MODES[0]},
+                    help="Fully kept above this; a cosine taper between the two velocities avoids "
+                         "ringing. Must be above the reject velocity"),
               Param("fk_f_max", "Filter only below, Hz  (0 = all frequencies)", "float", 0.0, min=0, step=5,
-                    group="F-K filter", help="Ground roll is low-frequency: e.g. 25 leaves everything above 25 Hz untouched"),
+                    group="F-K filter", show_if={"fk_mode": FK_MODES[0]},
+                    help="Ground roll is low-frequency: e.g. 25 leaves everything above 25 Hz untouched"),
+              Param("fk_polygon", "Reject polygon corners  (k cycles per 1000 length units, f Hz)", "table",
+                    _FK_POLY_DEFAULT, group="F-K filter", show_if={"fk_mode": FK_MODES[1]},
+                    help="Filled in when you draw on the F-K domain plot (box or Shift + drag lasso), then press ▶. "
+                         "You can also type or correct the corners here. At least 3 corners"),
+              Param("fk_mirror", "Mirror the polygon to negative k", "bool", True, group="F-K filter",
+                    show_if={"fk_mode": FK_MODES[1]},
+                    help="Ground roll goes both ways from the source (split spread): the same zone at -k is rejected too"),
+              Param("fk_plot_fmax", "F-K plots up to, Hz  (0 = auto)", "float", 0.0, min=0, step=10, group="F-K filter",
+                    help="Frequency range of the F-K plots - lower = the low-frequency ground roll is bigger to draw on"),
               Param("fk_output", "Output", "choice", _OUTPUTS[0], choices=_OUTPUTS, group="F-K filter",
                     help="Removed noise = what the filter takes away (input minus filtered) - to check that no "
                          "reflection energy is removed")],
       order=37)
-def fk_filter_step(state: PipeState, v_reject: float = 3000.0, v_pass: float = 4500.0, fk_f_max: float = 0.0,
+def fk_filter_step(state: PipeState, fk_mode: str = FK_MODES[0], v_reject: float = 3000.0, v_pass: float = 4500.0,
+                   fk_f_max: float = 0.0, fk_polygon=None, fk_mirror: bool = True, fk_plot_fmax: float = 0.0,
                    fk_output: str = _OUTPUTS[0]):
-    if v_pass <= v_reject:
-        raise ValueError(f"the pass velocity ({v_pass:g}) must be above the reject velocity ({v_reject:g})")
     g = state.gather
-    out, shown, note = noise.fk_filter(g, v_reject, v_pass, fk_f_max, spectra=not state.batch)
+    manual = fk_mode == FK_MODES[1]
+    poly = noise.polygon_rows(fk_polygon if fk_polygon is not None else _FK_POLY_DEFAULT) if manual else None
+    if manual:
+        weight = noise.polygon_weight(poly, fk_mirror)
+        zone = f"reject polygon of {len(poly)} corners" + (" (mirrored to -k)" if fk_mirror else "")
+    else:
+        if v_pass <= v_reject:
+            raise ValueError(f"the pass velocity ({v_pass:g}) must be above the reject velocity ({v_reject:g})")
+        weight = noise.fan_weight(v_reject, v_pass, fk_f_max)
+        zone = (f"rejects apparent velocities below {v_reject:g}, passes above {v_pass:g}"
+                + (f", only below {fk_f_max:g} Hz" if fk_f_max > 0 else ""))
+    out, shown, note = noise.fk_filter(g, weight, spectra=not state.batch)
     data = out if fk_output == _OUTPUTS[0] else (g.data - out).astype(g.data.dtype)
     figs = None
     if shown is not None:
-        f_lim = min(fk_f_max * 2 if fk_f_max > 0 else 100.0, 500.0 / g.dt_ms)
-        figs = [flip("F-K spectrum flip-flop (before / after)",
-                     [(lab, noise.plot_fk(shown, v_reject, v_pass, f_lim, which)) for lab, which in
-                      (("Before", "before"), ("After", "after"))]),
+        nyq = 500.0 / g.dt_ms
+        f_lim = min(fk_plot_fmax if fk_plot_fmax > 0 else
+                    (max(2 * float(poly[:, 1].max()), 20.0) if manual else (fk_f_max * 2 if fk_f_max > 0 else 100.0)), nyq)
+        draw = dict(fan=None if manual else (v_reject, v_pass), poly=poly, mirror=fk_mirror)
+        domain = noise.plot_fk(shown, f_lim, "before", **draw)
+        figs = [Output("image", "F-K domain - drag a box or Shift + drag a lasso to draw the reject zone, then press ▶",
+                       plotting.figure_to_png(domain), figure=domain, pick="fk"),
+                flip("F-K spectrum flip-flop (before / after / removed noise)",
+                     [(lab, noise.plot_fk(shown, f_lim, which, **draw)) for lab, which in
+                      (("Before", "before"), ("After", "after"), ("Removed noise", "removed"))]),
                 _gather_flip(g, out, "F-K Filter")]
-    return replace(_with_data(state, data), figs=figs), note + ("" if fk_output == _OUTPUTS[0] else " · showing the removed noise")
+    note = f"{zone} · {note}" + ("" if fk_output == _OUTPUTS[0] else " · showing the removed noise")
+    return replace(_with_data(state, data), figs=figs), note
 
 
 _RADON = ["Linear (ground roll)", "Parabolic (multiples)"]

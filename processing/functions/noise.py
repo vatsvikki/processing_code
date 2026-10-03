@@ -77,24 +77,68 @@ def fk_weight(f: np.ndarray, k: np.ndarray, v_reject: float, v_pass: float, f_ma
     return w
 
 
-def _fk_line(block: np.ndarray, dt: float, dx: float, v_reject, v_pass, f_max, spectra=False):
-    """F-K filter of one regular block [ns, nx] (time down, distance across); returns the filtered block and, with
-    spectra=True, (f, k, |before|, |after|) for the plot."""
+K_COL, F_COL = "k (cycles per 1000)", "f (Hz)"         # columns of a drawn / typed F-K reject polygon
+
+
+def polygon_rows(rows) -> np.ndarray:
+    """[[k per 1000 units, f Hz], ...] from the table rows (empty rows skipped)."""
+    pts = []
+    for r in rows or []:
+        low = {str(a).strip().lower(): b for a, b in (r.items() if isinstance(r, dict) else [])}
+        k, f = low.get(K_COL.lower()), low.get(F_COL.lower())
+        if k in (None, "") or f in (None, ""):
+            continue
+        pts.append((float(k), float(f)))
+    return np.array(pts, float).reshape(-1, 2)
+
+
+def polygon_weight(poly: np.ndarray, mirror: bool = True, smooth_bins: int = 3):
+    """A weight function (f, k) -> pass weight for a reject polygon drawn in (k per 1000 units, f Hz): 0 inside
+    (and inside its mirror image at -k), 1 outside, edges smoothed over a few bins (no ringing)."""
+    from matplotlib.path import Path as _Path
+    if len(poly) < 3:
+        raise ValueError("the reject polygon needs at least 3 corners - drag a box or Shift + drag a lasso on the "
+                         "F-K plot, or type the corners in the table")
+    path = _Path(poly)
+
+    def weight(f: np.ndarray, k: np.ndarray) -> np.ndarray:
+        kk, ff = np.meshgrid(k * 1000.0, f)
+        pts = np.column_stack([kk.ravel(), ff.ravel()])
+        inside = path.contains_points(pts)
+        if mirror:
+            inside |= path.contains_points(np.column_stack([-kk.ravel(), ff.ravel()]))
+        w = 1.0 - inside.reshape(kk.shape).astype(float)
+        if smooth_bins > 1:                              # soft edges: a short running mean in f and in k
+            ker = np.ones(smooth_bins) / smooth_bins
+            w = np.apply_along_axis(lambda c: np.convolve(c, ker, mode="same"), 0, w)
+            w = np.apply_along_axis(lambda c: np.convolve(c, ker, mode="same"), 1, w)
+        return np.clip(w, 0.0, 1.0)
+    return weight
+
+
+def fan_weight(v_reject: float, v_pass: float, f_max: float = 0.0):
+    return lambda f, k: fk_weight(f, k, v_reject, v_pass, f_max)
+
+
+def _fk_line(block: np.ndarray, dt: float, dx: float, weight, spectra=False):
+    """F-K filter of one regular block [ns, nx] (time down, distance across) with the pass weight weight(f, k);
+    returns the filtered block and, with spectra=True, (f, k, |before|, |after|) for the plot."""
     ns, nx = block.shape
     nt = int(2 ** np.ceil(np.log2(ns * 1.25)))
     nk = int(2 ** np.ceil(np.log2(max(2 * nx, 8))))
     spec = np.fft.fft(np.fft.rfft(block, n=nt, axis=0), n=nk, axis=1)
     f = np.fft.rfftfreq(nt, dt)
     k = np.fft.fftfreq(nk, dx)
-    w = fk_weight(f, k, v_reject, v_pass, f_max)
+    w = weight(f, k)
     out = np.fft.irfft(np.fft.ifft(spec * w, axis=1)[:, :nx], n=nt, axis=0)[:ns]
     if not spectra:
         return out, None
     return out, (f, np.fft.fftshift(k), np.fft.fftshift(np.abs(spec), axes=1), np.fft.fftshift(np.abs(spec * w), axes=1))
 
 
-def fk_filter(g: ShotGather, v_reject: float, v_pass: float, f_max: float = 0.0, spectra: bool = False):
-    """F-K (velocity fan) filter of a shot gather, one receiver line at a time, traces at their position along the line.
+def fk_filter(g: ShotGather, weight, spectra: bool = False):
+    """F-K filter of a shot gather with the pass weight weight(f, k) (fan_weight / polygon_weight), one receiver line
+    at a time, traces at their position along the line.
     Returns (filtered data [ntr, ns], the spectra of the line with the most traces or None, note)."""
     dt = g.dt_ms / 1000.0
     out = np.array(g.data, dtype=np.float64, copy=True)
@@ -106,13 +150,12 @@ def fk_filter(g: ShotGather, v_reject: float, v_pass: float, f_max: float = 0.0,
         col, dx = _regular(along_line(g, idx))
         block = np.zeros((g.ns, col.max() + 1))
         block[:, col] = g.data[idx].T
-        res, sp = _fk_line(block, dt, dx, v_reject, v_pass, f_max, spectra=spectra and n == 0)
+        res, sp = _fk_line(block, dt, dx, weight, spectra=spectra and n == 0)
         out[idx] = res[:, col].T
         if sp is not None:
             shown = (*sp, dx, len(idx))
         done += len(idx)
-    note = (f"rejects apparent velocities below {v_reject:g}, passes above {v_pass:g}"
-            + (f", only below {f_max:g} Hz" if f_max > 0 else "") + f" · {len(groups)} receiver line(s), {done} traces")
+    note = f"{len(groups)} receiver line(s), {done} traces"
     return out.astype(g.data.dtype, copy=False), shown, note
 
 
@@ -226,31 +269,40 @@ def _db(a: np.ndarray) -> np.ndarray:
     return 20 * np.log10(np.maximum(a / max(float(a.max()), 1e-30), 1e-4))
 
 
-def plot_fk(shown, v_reject: float, v_pass: float, f_lim: float, which: str = "before",
+def plot_fk(shown, f_lim: float, which: str = "before", fan=None, poly=None, mirror=True,
             figsize=(14.0, 6.0)) -> Figure:
-    """F-K amplitude (dB) of the longest receiver line, before or after the filter (same scale, so the two flip-flop),
-    with the reject (solid) / pass (dashed) velocity lines."""
+    """F-K amplitude (dB) of the longest receiver line - before / after the filter or what it removed - all on the
+    input's scale (so they flip-flop), with the reject zone: fan = (v_reject, v_pass) lines, or the polygon.
+    Axes: k in cycles per 1000 length units, f in Hz (the units a drawn polygon is read in)."""
     f, k, before, after, dx, n = shown
-    amp = before if which == "before" else after
-    ref = float(before.max()) or 1.0                    # both scaled to the input's peak
+    amp = {"before": before, "after": after, "removed": np.abs(before - after)}[which]
+    ref = float(before.max()) or 1.0
     fig = Figure(figsize=figsize, facecolor="white")
     sel = f <= f_lim
     ax = fig.add_axes([0.06, 0.10, 0.86, 0.78])
     im = ax.imshow(20 * np.log10(np.maximum(amp[sel] / ref, 1e-4)), aspect="auto", origin="lower", cmap="viridis",
                    vmin=-60, vmax=0, extent=[k[0] * 1000, k[-1] * 1000, f[sel][0], f[sel][-1]])
-    for v, style in ((v_reject, "-"), (v_pass, "--")):
-        kk = np.array([0.0, f_lim / v]) * 1000
-        for sgn in (1, -1):
-            ax.plot(sgn * kk, [0, f_lim], color="white", linestyle=style, linewidth=1.2)
+    if fan is not None:
+        for v, style in zip(fan, ("-", "--")):
+            kk = np.array([0.0, f_lim / v]) * 1000
+            for sgn in (1, -1):
+                ax.plot(sgn * kk, [0, f_lim], color="white", linestyle=style, linewidth=1.2)
+        zone = f"solid: reject velocity {fan[0]:g}, dashed: pass velocity {fan[1]:g}"
+    else:
+        zone = "red: the reject polygon" + (" (and its mirror at -k)" if mirror else "")
+    if poly is not None and len(poly) >= 3:
+        for sgn in ((1, -1) if mirror else (1,)):
+            closed = np.vstack([poly, poly[:1]])
+            ax.plot(sgn * closed[:, 0], closed[:, 1], color="#ff4d4d", linewidth=1.6)
     ax.set_xlim(k[0] * 1000, k[-1] * 1000)
     ax.set_ylim(0, f_lim)
-    ax.set_xlabel("Wavenumber (cycles per 1000 length units)", color=INK_2)
-    ax.set_ylabel("Frequency (Hz)", color=INK_2)
+    ax.set_xlabel("Wavenumber k (cycles per 1000 length units)", color=INK_2)
+    ax.set_ylabel("Frequency f (Hz)", color=INK_2)
     ax.tick_params(labelsize=9, colors=INK_2)
     cax = fig.add_axes([0.935, 0.10, 0.012, 0.78])
     fig.colorbar(im, cax=cax).set_label("dB re input peak", color=INK_2)
-    fig.suptitle(f"F-K spectrum {'BEFORE' if which == 'before' else 'AFTER'} the filter - longest receiver line ({n} "
-                 f"traces, spacing {dx:g}) - solid: reject velocity {v_reject:g}, dashed: pass velocity {v_pass:g}",
+    what = {"before": "BEFORE the filter", "after": "AFTER the filter", "removed": "REMOVED noise"}[which]
+    fig.suptitle(f"F-K spectrum {what} - longest receiver line ({n} traces, spacing {dx:g}) - {zone}",
                  x=0.06, y=0.97, ha="left", fontsize=12, color=INK)
     return fig
 
