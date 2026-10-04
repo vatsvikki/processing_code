@@ -795,7 +795,8 @@ def _(antialias, corner_fit, corners, datetime, depth_to_time, encode_samples, i
             f"TWT, DT {float(out_dt.value):g} MS, {_ns} SAMPLES, {out_fmt.value} FLOAT", "ORIGINAL TEXT HEADER:"]
     _old = [l[3:].rstrip() if l[:1] == "C" else l.rstrip() for l in img["lines"]]
     _cards = (_new + _old)[:39] + ["END TEXTUAL HEADER"]
-    _text = "".join(f"C{_i + 1:2d} {_c}"[:80].ljust(80) for _i, _c in enumerate(_cards)).encode("cp037")
+    _text = "".join(f"C{_i + 1:2d} {_c}"[:80].ljust(80) for _i, _c in enumerate(_cards)).replace("–", "-").replace("—", "-").encode(
+        "cp037", errors="replace")              # (EBCDIC has no dashes / symbols such as "–": replaced)
     _bin = bytearray(img["binary"])
     if img["order"] == "<":
         for _o in (12, 16, 18, 20, 22, 24, 304):

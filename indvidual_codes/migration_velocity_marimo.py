@@ -772,7 +772,8 @@ def _(DOMAINS, answers, blocked, convert, corner_fit, datetime, encode_samples, 
     _new.append("ORIGINAL TEXT HEADER:")
     _old = [l[3:].rstrip() if l[:1] == "C" else l.rstrip() for l in seg["lines"]]
     _cards = (_new + _old)[:39] + ["END TEXTUAL HEADER"]
-    _text = "".join(f"C{_i + 1:2d} {_c}"[:80].ljust(80) for _i, _c in enumerate(_cards)).encode("cp037")
+    _text = "".join(f"C{_i + 1:2d} {_c}"[:80].ljust(80) for _i, _c in enumerate(_cards)).replace("–", "-").replace("—", "-").encode(
+        "cp037", errors="replace")              # (EBCDIC has no dashes / symbols such as "–": replaced)
 
     _bin = bytearray(seg["binary"])
     if seg["order"] == "<":                                   # (the output is always big-endian)
