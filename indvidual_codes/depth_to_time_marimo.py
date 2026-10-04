@@ -11,7 +11,7 @@ def _(mo):
 
     **1.** Input file, input parameters & corner points &nbsp;→&nbsp; **2.** Velocity file (or a constant / a
     velocity function) with its parameters & corner points &nbsp;→&nbsp;
-    **3.** Output parameters &nbsp;→&nbsp; **4.** Plot depth and time &nbsp;→&nbsp; **5.** Convert and write.
+    **3.** Output parameters &nbsp;→&nbsp; **4.** Plot IL / XL sections in depth and time &nbsp;→&nbsp; **5.** Convert and write.
 
     Every depth sample goes to its two-way time **t = 2 ∫ dz / V(z)**, so the conversion needs a velocity - give a
     constant, type a velocity function, or use a velocity SEG-Y (step 2). The answers are saved per file
@@ -561,11 +561,12 @@ def _(DOMAINS, LEN_UNITS, VEL_UNITS, VMATCH, VSOURCES, corner_fit, corner_rows_o
         return np.array(sorted(out)) if out else np.zeros((0, 2))
 
     vu = VEL_UNITS[v_unit.value]
-    vmsg, twt_one, vel_near, vel_axis_si = "", None, None, None
+    vmsg, twt_one, vel_near, vel_axis_si, vint_one = "", None, None, None, None
     if vsource.value == VSOURCES[1]:
         _v = float(v_const.value) * vu
         mo.stop(_v <= 0, mo.callout(mo.md("The velocity must be > 0."), kind="danger"))
         twt_one = 2 * depth_m / _v
+        vint_one = np.full(len(depth_m), _v)
         vmsg = f"constant {float(v_const.value):g} {v_unit.value}"
     elif vsource.value == VSOURCES[2]:
         _t = _rows(v_depth_tab, "depth", "velocity")
@@ -575,6 +576,7 @@ def _(DOMAINS, LEN_UNITS, VEL_UNITS, VMATCH, VSOURCES, corner_fit, corner_rows_o
         _v = np.interp(_z, _t[:, 0] * LEN_UNITS[in_len.value], _t[:, 1] * vu)
         _tt = np.concatenate([[0.0], np.cumsum(np.diff(_z) * (1 / _v[:-1] + 1 / _v[1:]))])    # 2 * trapezoid of 1/v
         twt_one = _tt[-len(depth_m):]
+        vint_one = np.interp(depth_m, _t[:, 0] * LEN_UNITS[in_len.value], _t[:, 1] * vu)
         vmsg = f"depth function of {len(_t)} rows"
     elif vsource.value == VSOURCES[3]:
         _t = _rows(v_time_tab, "time", "velocity")
@@ -584,6 +586,7 @@ def _(DOMAINS, LEN_UNITS, VEL_UNITS, VMATCH, VSOURCES, corner_fit, corner_rows_o
         _vr = np.interp(_tq, _t[:, 0], _t[:, 1]) * vu
         _vint, _T, _Z, _bad = to_interval(_vr[None], _tq / 1000.0, "RMS", DOMAINS[0])
         twt_one = np.interp(depth_m, _Z[0], _T[0])
+        vint_one = _vint[0][np.clip(np.searchsorted(_Z[0], depth_m), 0, _vint.shape[1] - 1)]
         vmsg = f"RMS function of {len(_t)} rows (Dix to interval)"
     else:
         mo.stop(vel_file is None, mo.callout(mo.md("Load the velocity file (step 2)."), kind="warn"))
@@ -627,6 +630,19 @@ def _(DOMAINS, LEN_UNITS, VEL_UNITS, VMATCH, VSOURCES, corner_fit, corner_rows_o
         vint, t, z, _ = to_interval(v, vel_axis_si, v_type.value, v_domain.value)
         return time_at_depths(t, z, vint, depth_m, v_below.value, float(v_grad.value) * LEN_UNITS[v_len.value])[0]
 
+    def vint_for(idx):
+        """Interval velocity (velocity unit) at every depth sample of the image traces idx - NaN below the end of a
+        velocity file (there the time comes from the 'below' choice, not from the file)."""
+        if vint_one is not None:
+            return np.broadcast_to(vint_one / vu, (len(idx), len(depth_m)))
+        v = samples_of(vel_file, records(vel_file)[vel_near[idx]]) * vu
+        vint, t, z, _ = to_interval(v, vel_axis_si, v_type.value, v_domain.value)
+        out = np.empty((len(idx), len(depth_m)))
+        for r in range(len(idx)):
+            j = np.clip(np.searchsorted(z[r], depth_m), 0, vint.shape[1] - 1)
+            out[r] = np.where(depth_m <= z[r, -1], vint[r, j], np.nan)
+        return out / vu
+
     def vel_along(idx):
         """The velocity file's values for the image traces idx (None for a constant / a typed function)."""
         if vel_file is None or vel_near is None:
@@ -636,7 +652,7 @@ def _(DOMAINS, LEN_UNITS, VEL_UNITS, VMATCH, VSOURCES, corner_fit, corner_rows_o
     _t_end = float(twt_for(np.array([len(img_ilv) // 2]))[0, -1] * 1000)
     mo.callout(mo.md(f"Velocity: **{vmsg}** · the deepest sample ({depth_m[-1] / LEN_UNITS[in_len.value]:,.0f} "
                      f"{in_len.value}) goes to **{_t_end:,.0f} ms** TWT"), kind="info")
-    return twt_for, vel_along, vel_axis_si, vmsg
+    return twt_for, vel_along, vel_axis_si, vint_for, vmsg
 
 
 @app.cell(hide_code=True)
@@ -652,92 +668,251 @@ def _(S, img, mo, np, twt_for):
     return antialias, out_dt, out_fmt, out_tmax
 
 
-@app.cell(hide_code=True)
-def _(mo):
-    # ---- 4. plot ----------------------------------------------------------------------------------------------------
-    pv_kind = mo.ui.radio(["Inline", "Crossline"], value="Inline", label="Plot", inline=True)
-    mo.vstack([mo.md("## 4. Plot - depth and time"), pv_kind])
-    return (pv_kind,)
+@app.cell
+def _(np):
+    # ---- the figures of the app's CDP Stack (functions/plotting.py: plot_stack_sections, plot_velocity_sections,
+    # plot_overlay_sections) - same layout, sizes, colour maps, clip, titles - with the vertical axis as a parameter
+    from matplotlib.figure import Figure as _Figure
+    import matplotlib as _mpl
+
+    def _two_sections(fig_height):
+        fig = _Figure(figsize=(12.0, float(fig_height)), facecolor="white")
+        axes = fig.subplots(1, 2, gridspec_kw={"width_ratios": [60, 40]}, sharey=True)
+        return fig, axes
+
+    def _extent(vary_vals, y_max):
+        a, b = float(vary_vals[0]), float(vary_vals[-1])
+        if a == b:
+            a, b = a - 0.5, b + 0.5
+        return [a, b, y_max, 0]
+
+    def _empty(ax, fixed_label, fixed_val):
+        ax.text(0.5, 0.5, f"No traces at {fixed_label}={int(fixed_val)}", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title(f"{fixed_label}={int(fixed_val)} (empty)")
+
+    def _inset_colorbar(fig, ax, im):
+        cax = ax.inset_axes([0.55, 0.06, 0.4, 0.035])
+        cb = fig.colorbar(im, cax=cax, orientation="horizontal")
+        cb.ax.tick_params(labelsize=7)
+        cb.outline.set_linewidth(0.5)
+
+    def plot_sections(il_result, xl_result, il_value, xl_value, y_max, y_label, *, clip_pct=98.0, fig_height=7.5):
+        """IL section (fixed IL, varying XL) left, XL section right, same vertical axis - as the app's stack."""
+        fig, axes = _two_sections(fig_height)
+        for ax, result, fixed_label, fixed_val, vary_label in ((axes[0], il_result, "IL", il_value, "XL"),
+                                                                (axes[1], xl_result, "XL", xl_value, "IL")):
+            if result is None:
+                _empty(ax, fixed_label, fixed_val)
+                continue
+            vary_vals, section = result
+            vclip = np.percentile(np.abs(section), clip_pct) or 1.0
+            ax.imshow(section.T, aspect="auto", cmap="gray", vmin=-vclip, vmax=vclip, extent=_extent(vary_vals, y_max))
+            ax.set_title(f"{fixed_label}={int(fixed_val)}, {len(vary_vals)} CDPs")
+            ax.set_xlabel(vary_label)
+        axes[0].set_ylim(y_max, 0)
+        axes[0].set_ylabel(y_label)
+        fig.tight_layout()
+        return fig
+
+    def plot_velocity_sections(il_result, xl_result, il_value, xl_value, y_max, y_label, kind="interval", *,
+                               fig_height=7.5):
+        """Velocity along the same two lines (gray = beyond the velocity model's own range)."""
+        cmap = _mpl.colormaps["viridis"].copy()
+        cmap.set_bad(color="lightgray")
+        fig, axes = _two_sections(fig_height)
+        im = None
+        for ax, result, fixed_label, fixed_val, vary_label in ((axes[0], il_result, "IL", il_value, "XL"),
+                                                                (axes[1], xl_result, "XL", xl_value, "IL")):
+            if result is None:
+                _empty(ax, fixed_label, fixed_val)
+                continue
+            vary_vals, section = result
+            im = ax.imshow(section.T, aspect="auto", cmap=cmap, extent=_extent(vary_vals, y_max))
+            ax.set_title(f"{fixed_label}={int(fixed_val)} {kind} velocity")
+            ax.set_xlabel(vary_label)
+        axes[0].set_ylim(y_max, 0)
+        axes[0].set_ylabel(y_label)
+        if im is not None:
+            _inset_colorbar(fig, axes[0], im)
+        fig.tight_layout()
+        return fig
+
+    def plot_overlay_sections(il_result, xl_result, il_value, xl_value, y_max, y_label, kind="interval", *,
+                              clip_pct=98.0, fig_height=7.5):
+        """The velocity in colour (half transparent) over the grayscale section; where the model has no data the
+        section shows through."""
+        cmap = _mpl.colormaps["viridis"].copy()
+        cmap.set_bad(alpha=0.0)
+        fig, axes = _two_sections(fig_height)
+        im = None
+        for ax, result, fixed_label, fixed_val, vary_label in ((axes[0], il_result, "IL", il_value, "XL"),
+                                                                (axes[1], xl_result, "XL", xl_value, "IL")):
+            if result is None:
+                _empty(ax, fixed_label, fixed_val)
+                continue
+            vary_vals, sec, vel = result
+            extent = _extent(vary_vals, y_max)
+            vclip = np.percentile(np.abs(sec), clip_pct) or 1.0
+            ax.imshow(sec.T, aspect="auto", cmap="gray", vmin=-vclip, vmax=vclip, extent=extent)
+            im = ax.imshow(vel.T, aspect="auto", cmap=cmap, alpha=0.5, extent=extent)
+            ax.set_title(f"{fixed_label}={int(fixed_val)} + {kind} vel, {len(vary_vals)} CDPs")
+            ax.set_xlabel(vary_label)
+        axes[0].set_ylim(y_max, 0)
+        axes[0].set_ylabel(y_label)
+        if im is not None:
+            _inset_colorbar(fig, axes[0], im)
+        fig.tight_layout()
+        return fig
+
+    return plot_overlay_sections, plot_sections, plot_velocity_sections
 
 
 @app.cell(hide_code=True)
-def _(img_ilv, img_xlv, mo, np, pv_kind):
-    _v = np.unique(img_ilv if pv_kind.value == "Inline" else img_xlv)
-    pv_line = mo.ui.slider(steps=[int(x) for x in _v], value=int(_v[len(_v) // 2]), show_value=True,
-                           include_input=True, full_width=True, debounce=True, label=f"{pv_kind.value} number")
-    pv_line
-    return (pv_line,)
+def _(img, img_ilv, img_xlv, mo, np, records):
+    # ---- 4. plot: an IL section and an XL section, in depth and in time (as the app's stack) -------------------------
+    # default lines: through the middle of the LIVE data - every 4th inline / crossline looked at (1/16 of the traces,
+    # 3 samples each), so the large file is not read in full
+    _r = records(img)
+    _bps = (img["trace_bytes"] - 240) // img["ns"]
+    _sub = np.flatnonzero((img_ilv % 4 == 0) & (img_xlv % 4 == 0))
+    if len(_sub) < 50:
+        _sub = np.arange(0, img["ntr"], max(1, img["ntr"] // 20000))
+    _blk = np.asarray(_r[_sub])
+    _live = np.zeros(len(_sub), bool)
+    for _k in (img["ns"] // 4, img["ns"] // 2, 3 * img["ns"] // 4):
+        _live |= _blk[:, 240 + _bps * _k:240 + _bps * (_k + 1)].any(axis=1)
+    if not _live.any():
+        _live[:] = True
+
+    def _mid(v, steps):
+        m = float(np.median(v[_sub][_live]))
+        return int(steps[np.argmin(np.abs(steps - m))])
+
+    _ilu, _xlu = np.unique(img_ilv), np.unique(img_xlv)
+    sec_il = mo.ui.slider(steps=[int(x) for x in _ilu], value=_mid(img_ilv, _ilu), show_value=True, include_input=True,
+                          full_width=True, debounce=True, label="Fixed IL (inline section)")
+    sec_xl = mo.ui.slider(steps=[int(x) for x in _xlu], value=_mid(img_xlv, _xlu), show_value=True, include_input=True,
+                          full_width=True, debounce=True, label="Fixed XL (crossline section)")
+    clip_pct = mo.ui.number(value=98.0, start=80, stop=100, step=0.5, label="Amplitude clip percentile")
+    fig_height = mo.ui.number(value=7.0, start=3, stop=14, step=0.5, label="Figure height, inches")
+    mo.vstack([mo.md("## 4. Plot - depth and time"), sec_il, sec_xl,
+               mo.hstack([clip_pct, fig_height], justify="start", gap=1)])
+    return clip_pct, fig_height, sec_il, sec_xl
 
 
 @app.cell(hide_code=True)
-def _(DOMAINS, VEL_UNITS, antialias, corner_fit, depth_axis, depth_to_time, ilxl_to_xy, img, img_ilv, img_xlv, in_len,
-      mo, np, out_dt, out_tmax, plt, pv_kind, pv_line, records, samples_of, time, twt_for, v_domain, v_len, v_unit,
-      vel_along, vel_axis_si):
-    _inl = pv_kind.value == "Inline"
-    _sel = np.flatnonzero((img_ilv if _inl else img_xlv) == int(pv_line.value))
-    mo.stop(len(_sel) == 0, mo.callout(mo.md(f"{pv_kind.value} {pv_line.value} is not in the file."), kind="warn"))
-    _along = img_xlv if _inl else img_ilv
-    _sel = _sel[np.argsort(_along[_sel])]
+def _(antialias, clip_pct, corner_fit, depth_axis, depth_to_time, fig_height, ilxl_to_xy, img, img_ilv, img_xlv,
+      in_len, mo, np, out_dt, out_tmax, plot_overlay_sections, plot_sections, plot_velocity_sections, plt, records,
+      samples_of, sec_il, sec_xl, time, twt_for, v_unit, vint_for):
     _t0 = time.perf_counter()
-    _amp = samples_of(img, records(img)[_sel])
-    _twt = twt_for(_sel)
     _out_t = np.arange(0.0, float(out_tmax.value) + 1e-9, float(out_dt.value)) / 1000.0
-    _tim = depth_to_time(_amp, np.array(_twt), _out_t, antialias.value)
+
+    def _line(fixed, value, along):
+        sel = np.flatnonzero(fixed == int(value))
+        if not len(sel):
+            return None
+        sel = sel[np.argsort(along[sel])]
+        amp = samples_of(img, records(img)[sel])
+        twt = np.array(twt_for(sel))
+        tim = depth_to_time(amp, twt, _out_t, antialias.value)
+        vz = np.array(vint_for(sel))                        # interval velocity at the depths (NaN below the model)
+        vt = np.full((len(sel), len(_out_t)), np.nan)        # ... and at the output times
+        for r in range(len(sel)):
+            ok = np.isfinite(vz[r])
+            if ok.any():
+                tend = twt[r][ok][-1]
+                vt[r] = np.where(_out_t <= tend, np.interp(_out_t, twt[r][ok], vz[r][ok]), np.nan)
+        return along[sel], amp, tim, vt, twt, sel
+
+    _il = _line(img_ilv, sec_il.value, img_xlv)
+    _xl = _line(img_xlv, sec_xl.value, img_ilv)
     _secs = time.perf_counter() - _t0
-    _live = np.flatnonzero(np.abs(_amp).max(axis=1) > 0)
-    _clip = float(np.percentile(np.abs(_amp[_live]), 98)) if len(_live) else 1.0
-    _k = int(_live[len(_live) // 2]) if len(_live) else 0
-    _x0, _x1 = _along[_sel][0], _along[_sel][-1]
-    _xlab = "Crossline" if _inl else "Inline"
-    _fig = plt.figure(figsize=(16, 7))
-    _gs = _fig.add_gridspec(2, 3, width_ratios=[1, 1, 0.45], height_ratios=[1, 0.7])
-    _axs = [_fig.add_subplot(_gs[:, 0]), _fig.add_subplot(_gs[:, 1]), _fig.add_subplot(_gs[0, 2]),
-            _fig.add_subplot(_gs[1, 2])]
-    _axs[0].imshow(_amp.T, aspect="auto", cmap="gray", vmin=-_clip, vmax=_clip,
-                   extent=[_x0, _x1, depth_axis[-1], depth_axis[0]])
-    _axs[0].set_title(f"DEPTH - {pv_kind.value.lower()} {pv_line.value}", fontsize=11)
-    _axs[0].set_ylabel(f"Depth ({in_len.value})", fontsize=9)
-    _axs[1].imshow(_tim.T, aspect="auto", cmap="gray", vmin=-_clip, vmax=_clip, extent=[_x0, _x1, _out_t[-1] * 1000, 0])
-    _axs[1].set_title(f"TIME - {pv_kind.value.lower()} {pv_line.value}", fontsize=11)
-    _axs[1].set_ylabel("TWT (ms)", fontsize=9)
-    for _a in _axs[:2]:
-        _a.set_xlabel(_xlab, fontsize=9)
-        _a.tick_params(labelsize=8)
-    _axs[2].plot(np.asarray(_twt)[_k] * 1000, depth_axis, color="#2a78d6")
-    _axs[2].invert_yaxis()
-    _axs[2].grid(alpha=0.3)
-    _axs[2].set_xlabel("TWT (ms)", fontsize=9)
-    _axs[2].set_ylabel(f"Depth ({in_len.value})", fontsize=9)
-    _axs[2].set_title("Depth → time used", fontsize=10)
-    _axs[2].tick_params(labelsize=8)
-    if corner_fit is not None:                             # where the line is, from the corner points
+    _cp, _fh = float(clip_pct.value), float(fig_height.value) + 0.5
+    _pick = lambda r, i: None if r is None else (r[0], r[i])
+    _zmax, _tmax = float(depth_axis[-1]), float(_out_t[-1] * 1000)
+    _f_depth = plot_sections(_pick(_il, 1), _pick(_xl, 1), sec_il.value, sec_xl.value, _zmax, f"Depth ({in_len.value})",
+                             clip_pct=_cp, fig_height=_fh)
+    _f_time = plot_sections(_pick(_il, 2), _pick(_xl, 2), sec_il.value, sec_xl.value, _tmax, "Time (ms)",
+                            clip_pct=_cp, fig_height=_fh)
+    _f_vel = plot_velocity_sections(_pick(_il, 3), _pick(_xl, 3), sec_il.value, sec_xl.value, _tmax, "Time (ms)",
+                                    fig_height=_fh)
+    _ov = lambda r: None if r is None else (r[0], r[2], r[3])
+    _f_ov = plot_overlay_sections(_ov(_il), _ov(_xl), sec_il.value, sec_xl.value, _tmax, "Time (ms)", clip_pct=_cp,
+                                  fig_height=_fh)
+    # the depth -> time relation used, and where the two lines are
+    _f_tz, (_a1, _a2) = plt.subplots(1, 2, figsize=(12.0, 4.0), gridspec_kw={"width_ratios": [40, 60]})
+    for _r, _lab in ((_il, f"IL={sec_il.value}"), (_xl, f"XL={sec_xl.value}")):
+        if _r is not None:
+            _k = len(_r[0]) // 2
+            _a1.plot(_r[4][_k] * 1000, depth_axis, label=f"{_lab} (middle trace)")
+    _a1.invert_yaxis()
+    _a1.set_xlabel("Time (ms)")
+    _a1.set_ylabel(f"Depth ({in_len.value})")
+    _a1.set_title("Depth → time used")
+    _a1.grid(alpha=0.3)
+    _a1.legend(fontsize=8)
+    if corner_fit is not None:
         _ci = np.array([img_ilv.min(), img_ilv.min(), img_ilv.max(), img_ilv.max(), img_ilv.min()], float)
         _cx = np.array([img_xlv.min(), img_xlv.max(), img_xlv.max(), img_xlv.min(), img_xlv.min()], float)
         _ox, _oy = ilxl_to_xy(corner_fit, _ci, _cx)
-        _lx, _ly = ilxl_to_xy(corner_fit, img_ilv[_sel].astype(float), img_xlv[_sel].astype(float))
-        _axs[3].plot(_ox, _oy, color="#9aa3b2", lw=1.2)
-        _axs[3].plot(_lx, _ly, color="#e34948", lw=2.2)
-        _axs[3].set_aspect("equal")
-        _axs[3].ticklabel_format(useOffset=False, style="plain")
-        _axs[3].tick_params(labelsize=6)
-        _axs[3].set_title(f"{pv_kind.value} {pv_line.value} on the survey", fontsize=9)
+        _a2.plot(_ox, _oy, color="gray", lw=1)
+        for _r, _c, _lab in ((_il, "tab:red", f"IL={sec_il.value}"), (_xl, "tab:blue", f"XL={sec_xl.value}")):
+            if _r is not None:
+                _lx, _ly = ilxl_to_xy(corner_fit, img_ilv[_r[5]].astype(float), img_xlv[_r[5]].astype(float))
+                _a2.plot(_lx, _ly, color=_c, lw=2, label=_lab)
+        _a2.set_aspect("equal")
+        _a2.ticklabel_format(useOffset=False, style="plain")
+        _a2.legend(fontsize=8)
+        _a2.set_title("Sections on the survey (corner points)")
     else:
-        _axs[3].axis("off")
-    _fig.tight_layout()
-    _vel = vel_along(_sel)
-    _vfig = None
-    if _vel is not None:                                   # the velocity used along this line
-        _is_t = v_domain.value == DOMAINS[0]
-        _vax = vel_axis_si * 1000 if _is_t else vel_axis_si / (0.3048 if v_len.value == "ft" else 1.0)
-        _vfig, _va = plt.subplots(figsize=(16, 3.6))
-        _im = _va.imshow(_vel.T, aspect="auto", cmap="jet", extent=[_x0, _x1, _vax[-1], _vax[0]])
-        _va.set_title(f"Velocity file along {pv_kind.value.lower()} {pv_line.value}", fontsize=10)
-        _va.set_xlabel(_xlab, fontsize=9)
-        _va.set_ylabel("TWT (ms)" if _is_t else f"Depth ({v_len.value})", fontsize=9)
-        _va.tick_params(labelsize=8)
-        _vfig.colorbar(_im, ax=_va, fraction=0.03).set_label(v_unit.value, fontsize=8)
-        _vfig.tight_layout()
-    mo.vstack([mo.md(f"{len(_sel)} traces converted in {_secs:.1f} s"), _fig] + ([_vfig] if _vfig is not None else []))
+        _a2.axis("off")
+    _f_tz.tight_layout()
+
+    def _png(fig, dpi=110):                                  # as the app: PNG at 110 dpi (keeps every output small)
+        import io as _io
+        from matplotlib.backends.backend_agg import FigureCanvasAgg as _Canvas
+        _Canvas(fig)
+        buf = _io.BytesIO()
+        fig.savefig(buf, format="png", dpi=dpi, facecolor="white")
+        return buf.getvalue()
+
+    _tag = f"IL {sec_il.value} / XL {sec_xl.value}"
+    sec_figs = [(f"Depth sections {_tag}", _png(_f_depth)), (f"Time sections {_tag}", _png(_f_time)),
+                (f"Velocity sections {_tag}", _png(_f_vel)), (f"Time + velocity {_tag}", _png(_f_ov)),
+                ("Depth → time and location", _png(_f_tz))]
+    plt.close(_f_tz)
+    mo.md(f"IL {sec_il.value} and XL {sec_xl.value} converted in {_secs:.1f} s · velocity in {v_unit.value}; gray "
+          "in the velocity sections = below the velocity model (time from the 'below' choice)")
+    return (sec_figs,)
+
+
+@app.cell(hide_code=True)
+def _(mo, sec_figs):
+    mo.vstack([mo.md(f"#### {sec_figs[0][0]}"), mo.image(sec_figs[0][1], style={"width": "100%", "height": "auto"})])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo, sec_figs):
+    mo.vstack([mo.md(f"#### {sec_figs[1][0]}"), mo.image(sec_figs[1][1], style={"width": "100%", "height": "auto"})])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo, sec_figs):
+    mo.vstack([mo.md(f"#### {sec_figs[2][0]}"), mo.image(sec_figs[2][1], style={"width": "100%", "height": "auto"})])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo, sec_figs):
+    mo.vstack([mo.md(f"#### {sec_figs[3][0]}"), mo.image(sec_figs[3][1], style={"width": "100%", "height": "auto"})])
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo, sec_figs):
+    mo.vstack([mo.md(f"#### {sec_figs[4][0]}"), mo.image(sec_figs[4][1], style={"width": "100%", "height": "auto"})])
     return
 
 
