@@ -193,7 +193,7 @@ WIDGET_INFO: dict[str, str] = {
                 "below it 'not run yet' until you press ▶. Selected shot only - ▶ Run flow runs the whole data.",
     "run_all": "Run every function of the flow on the selected shot, and the whole flow on the whole data (every shot of "
                "the FFID range) in one pass - each shot read once, the result written once to the output file.",
-    "batch_cancel": "Stops the whole-data run (press Run again to restart it). No file is written by a cancelled run (a "
+    "batch_cancel": "Stops the whole-data run - also one started earlier and still going in the background (press Run again to restart it). No file is written by a cancelled run (a "
                     "partial '.part' file is removed).",
     "job_dismiss": "Remove this message from the top of the page.",
     "job_refresh": "The bar re-checks the job every 2 s while it runs; this timer keeps it ticking.",
@@ -673,7 +673,13 @@ Flow card: the processed shots, or - when it ends with NMO Correction / CDP Stac
 the stack. ▶ beside a function only previews the selected shot. With NMO Correction / CDP Stack the shot functions'
 result is written once more (output/flows) - those steps need the data sorted by CDP; a later run with the same shot
 functions (e.g. only the stack settings changed) reuses it. 🌐✓ beside a function = done on the whole data with these
-settings. Results of earlier settings that the flow can no longer use are deleted (each is as big as the input). Tools that work on the whole file on their own (CDP Sort, CDP Recalculate, Shot Geometry QC) are in 🛠 Tools.
+settings. Results of earlier settings that the flow can no longer use are deleted (each is as big as the input).
+
+**Runs in the background.** A whole-data run is a process of its own on the machine: it goes on when you close the
+app, the browser, the SSH connection or the laptop, and the card at the bottom right shows it again (with its
+progress) when you open the app again. The card says which steps of the flow run now - e.g. *Steps 1–3 of 5: Spiking
+Decon → Bandpass Filter → AGC (on every shot)*, then *Step 5 of 5: CDP Stack (on the CDP gathers)*. Cancel stops it
+(no half-written file is left). Each run keeps its log in output/jobs/. Tools that work on the whole file on their own (CDP Sort, CDP Recalculate, Shot Geometry QC) are in 🛠 Tools.
 """,
     "cdp_stack_step": r"""
 **What it does.** Stacks the CDP gathers the steps above it produced - it has no velocity, NMO, sorting or filter of

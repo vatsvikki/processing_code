@@ -128,6 +128,7 @@ class BatchJob:
         self.done = self.total = self.traces_in = self.traces_out = 0
         self.result: BatchResult | None = None
         self.title = ""                                        # what the GUI calls this run ("up to 3. Bandpass ...")
+        self.step_text = ""                                    # which steps of the flow run now ("Steps 1-3 of 5 ...")
         self.resumed = ""                                      # the saved result it started from, if any
         self._t0 = self._t1 = 0.0
         self._cancel = threading.Event()
@@ -159,7 +160,16 @@ class BatchJob:
         return {"status": self.status, "message": self.message, "done": self.done, "total": self.total,
                 "unit": self.unit, "phase": self.phase, "product": self.product, "cdps": self.cdps,
                 "traces_in": self.traces_in, "traces_out": self.traces_out, "elapsed": elapsed, "eta": eta,
-                "result": self.result, "out_path": self.out_path}
+                "result": self.result, "out_path": self.out_path, "step_text": self.step_text,
+                "steps_total": len(self.steps), "title": self.title, "resumed": self.resumed}
+
+    def _steps_text(self, numbers: list[int], tail: str) -> str:
+        """"Steps 2-3 of 5: Spiking Decon -> Bandpass Filter" (1-based numbers in the flow run)."""
+        if not numbers:
+            return ""
+        names = " → ".join(get_step(self.steps[i - 1]["step"]).label for i in numbers)
+        span = f"Step {numbers[0]}" if len(numbers) == 1 else f"Steps {numbers[0]}–{numbers[-1]}"
+        return f"{span} of {len(self.steps)}: {names}{tail}"
 
     # -- the work -----------------------------------------------------------
     def _work(self, sgy: segy_io.SegyFile, idx: segy_io.ShotIndex, k: int):
@@ -295,6 +305,13 @@ class BatchJob:
                 fh.write(build_head(segy_io.open_segy(self.path), self._head_lines(sgy, idx, sel),
                                     self.fmt if out == final_out else "ieee"))
             self._pack_fmt = self.fmt if phase1_out is not None and phase1_out == final_out else "ieee"
+            # which steps of the flow this pass runs (processing steps after the ones reused from a kept result)
+            _proc_nums = [i + 1 for i, s_ in enumerate(self.steps[:len(self.shot_steps)])
+                          if get_step(s_["step"]).category != "Display"]
+            _run_nums = _proc_nums[j:] if run_phase1 else []
+            if _run_nums:
+                self.step_text = self._steps_text(_run_nums, " (on every shot)" + (
+                    f" - steps {_proc_nums[0]}–{_proc_nums[j - 1]} reused from the kept result" if j else ""))
             if run_phase1:
                 self.message = f"processing {len(sel)} shots with {self.workers} threads"
             self.phase = "shot steps"
@@ -350,6 +367,8 @@ class BatchJob:
                     w.writerows(rows)
             if self.cdp_steps and final_out is not None:
                 part = final_out + ".part"
+                _cdp_nums = [i + 1 for i, s_ in enumerate(self.steps) if s_["step"] in cdp_flow.CDP_STEP_KEYS]
+                self.step_text = self._steps_text(_cdp_nums, " (on the CDP gathers)")
                 self._cdp_phase(cdp_flow.processed_file(cdp_src) if cdp_src != self.path else self.path, part)
                 os.replace(part, final_out)
                 part = None

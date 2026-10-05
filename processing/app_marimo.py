@@ -17,6 +17,7 @@ def _():
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from functions import segy_io
     from functions.param_help import FUNCTION_INFO, PARAM_INFO, WIDGET_INFO, info_text
+    from functions.jobrunner import find_running as find_running_job, start_job as start_background_job
     from functions import (DEFAULT_DIR, FORMATS, SEGY_FORMATS, BatchJob, choices_for, default_for, estimate_batch, file_context,
                               get_categories, get_functions, get_steps, plot_tag, resolve_output, save_outputs)
 
@@ -49,6 +50,7 @@ def _():
     # values per place and function, and the stage shown (None = the last one)
     pipe_mem = {"slots": [], "params": {}, "view": None}
     return (BatchJob, DEFAULT_DIR, DEFAULT_FILE, FORMATS, Path, os, SEGY_FORMATS, SimpleNamespace, choices_for, default_for, estimate_batch,
+            find_running_job, start_background_job,
             file_context, functions, get_categories, get_steps, html, info_text, jobs, last, loaded, mo, pipe_mem, plot_tag,
             remembered, resolve_output, save_outputs, segy_io, tip, zoom_hist, FUNCTION_INFO, PARAM_INFO,
             WIDGET_INFO)
@@ -988,6 +990,7 @@ def _(WIDGET_INFO, mo, remembered, set_zoom_version, zoom_hist):
 
 @app.cell
 def _(BatchJob, DEFAULT_DIR, FORMATS, Path, SEGY_FORMATS, WIDGET_INFO, ctx, jobs, last, mo, os, path_input, resolve_output,
+      start_background_job,
        save_outputs, set_job_version, set_save_msg, tip):
     # ---- Save: writes the figures (and optionally tables) currently shown ----
     save_dir = mo.ui.text(value=DEFAULT_DIR, label="Folder for figures, tables and single-shot files " + tip(WIDGET_INFO["save_dir"]),
@@ -1086,18 +1089,22 @@ def _(BatchJob, DEFAULT_DIR, FORMATS, Path, SEGY_FORMATS, WIDGET_INFO, ctx, jobs
             _cur.cancel()
             _cur.join(10)
         try:
-            _job = BatchJob(_path, _t, _out, fmt=batch_fmt.value, ffid_from=int(batch_from.value or _lo),
-                            ffid_to=int(batch_to.value or _hi), overwrite=overwrite)
+            BatchJob(_path, _t, _out, fmt=batch_fmt.value)          # (checks the flow at once: no bad run started)
+            # a process of its own on the machine: it goes on when the app, the SSH connection or the laptop closes,
+            # and the app finds it again when it is reopened (functions/jobrunner.py)
+            _job = start_background_job({
+                "path": str(_path).strip(), "steps": _t, "out_path": _out, "fmt": batch_fmt.value,
+                "ffid_from": int(batch_from.value or _lo), "ffid_to": int(batch_to.value or _hi),
+                "overwrite": bool(overwrite), "title": _title, "key": _key(_t, _out) if _out else ""})
         except Exception as _e:
             return f"🌐 **Not run on the whole data - {type(_e).__name__}:** {_e}"
-        _job.title = _title
-        _job.key = _key(_t, _out) if _out else ""
-        jobs["current"] = _job.start()
+        jobs["current"] = _job
         jobs["current_kind"] = "save"
         jobs["announced"] = None
         set_job_version(lambda v: v + 1)
         return (f"🌐 Running the flow **{_job.title}** on the whole data (FFID {_job.ffid_from} – {_job.ffid_to}) -> "
-                f"`{_out or 'output/flows'}` - progress and Cancel in the card at the bottom right.")
+                f"`{_out or 'output/flows'}` - in the background: it goes on if you close the app or the laptop. "
+                "Progress and Cancel in the card at the bottom right.")
 
     def start_whole(_path, _steps, _k):
         """Run the flow up to function _k (all of it when _k is its length) on the whole data, in the background.
@@ -1189,10 +1196,14 @@ def _(mo):
 
 
 @app.cell
-def _(WIDGET_INFO, batch_cancel, job_refresh, job_version, jobs, mo, os, set_job_version):
+def _(WIDGET_INFO, batch_cancel, find_running_job, job_refresh, job_version, jobs, mo, os, set_job_version):
     # ---- whole-data job: a card fixed at the bottom right of the window (polled every 2 s while the job runs) ----
     job_version()
     _job = jobs.get("current")
+    if _job is None:                         # the app was reopened while a run goes on in the background: show it
+        _job = find_running_job()
+        if _job is not None:
+            jobs["current"], jobs["current_kind"], jobs["announced"] = _job, "save", None
     if _job is None:
         job_bar = None                       # nothing to show: no empty output that would still take up room
     else:
@@ -1245,6 +1256,10 @@ def _(WIDGET_INFO, batch_cancel, job_refresh, job_version, jobs, mo, os, set_job
             _detail = _s["message"]
         elif _running and getattr(_job, "resumed", ""):
             _detail += f"<br/>started from {_job.resumed}"
+        if _running and _s.get("step_text"):                 # which steps of the flow run now
+            _detail = f"<b>{_s['step_text']}</b><br/>" + _detail
+        if _running:
+            _detail += "<br/><span style='opacity:.7'>runs in the background - it goes on if you close the app</span>"
         _card = mo.Html(
             f'<div style="border:1px solid {_color};border-left:6px solid {_color};border-radius:10px;padding:10px 16px">'
             f'<div style="font-weight:700">{_icon} {_title} <span style="opacity:.65;font-weight:400">— {_name}</span></div>'
