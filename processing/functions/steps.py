@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from dataclasses import replace
 
 import numpy as np
@@ -588,6 +589,49 @@ def nmo_correction_step(state: PipeState, fig_height: float = 6.0, cdp_pick: str
     return out, f"CDP {cdp} NMO-corrected (Vrms {vel.min():,.0f}-{vel.max():,.0f} {vs.unit})"
 
 
+def _why_no_sections(src, stacked_file, vs, mute: float = 0.0) -> str:
+    """Why the IL / XL stacked sections cannot be shown (no full stack of exactly this flow) - the actual reason."""
+    from pathlib import Path as _Path
+    from . import jobrunner
+    what = f"the data processed by {' → '.join(src.labels)}" if src.specs else "the raw data"
+    run = "**▶ Run flow** (Flow card; it runs this flow on the whole data and stacks every CDP)"
+    reasons = []
+    job = jobrunner.find_running()
+    if job is not None:
+        reasons.append("⏳ A whole-data run is going in the background (card at the bottom right): the sections show "
+                       "here when it has finished - press ▶ beside CDP Stack again then.")
+    if src.specs and not src.processed:
+        reasons.append(f"The whole-data result of the steps above ({' → '.join(src.labels)}) is not there: this flow "
+                       "was not run on the whole data with these settings, or the run did not finish, or a run of a "
+                       "flow with other processing steps replaced it (only one is kept, each is as big as the input). "
+                       f"{run}.")
+    else:
+        others = []
+        folder = _Path(DEFAULT_DIR) / "stacks"
+        for meta in folder.glob(f"{_Path(stacked_file).stem}_*/meta.json") if stacked_file else []:
+            try:
+                m = json.loads(meta.read_text())
+            except (OSError, ValueError):
+                continue
+            if m.get("done"):
+                others.append(f"{m.get('created', '')}: {m.get('describe', '')}")
+        if others:
+            reasons.append(f"{what[0].upper() + what[1:]} was stacked before, but with **other settings** than now "
+                           f"(now: {stack_mod.describe(vs, mute, None, {})} - e.g. the NMO velocity or the stretch mute "
+                           f"changed since). Stacks there: " + "; ".join(sorted(others)[-3:]) + f". {run} again.")
+        elif job is None:
+            reasons.append(f"No full stack of {what} yet. {run} to stack every CDP - the IL / XL stacked sections"
+                           + (", velocity sections and overlay" if vs.nmo else "") + " then show here.")
+    try:
+        free = shutil.disk_usage(DEFAULT_DIR).free
+        if free < 2e9:
+            reasons.append(f"⚠ Only {free / 1e9:.1f} GB free on the disk of the output folder - a whole-data run "
+                           "cannot write its result: free some space (e.g. old files in output/flows).")
+    except OSError:
+        pass
+    return "**No IL / XL stacked sections:** " + "  \n".join(reasons)
+
+
 @step("CDP Stack", "Stacks the CDP gathers the steps above produced - nothing else: with NMO Correction above, the mean "
       "of the live (not stretch-muted) samples of its NMO-corrected gathers at every time (its velocity and mute; NMO is "
       "not done again); without it, the plain mean of the CDP gathers. 'Run flow on whole data' stacks every CDP; the "
@@ -652,16 +696,24 @@ def cdp_stack_step(state: PipeState, fig_height: float = 6.0, cdp_pick: str = ""
     fs = (stack_mod.cached(stacked_file, idx, vs, mute, None, {"raw": False, "post_nmo": False, "stack": False})
           if stacked_file else None)
     if fs is None:
-        md += ("\n\n**Run flow on whole data** (the 🌐 Whole data card) to stack every CDP of "
-               + (f"the data processed by {' → '.join(src.labels)}" if src.specs else "the raw data")
-               + " - the IL / XL stacked sections" + (", velocity sections and overlay" if vs.nmo else "")
-               + " then show here.")
+        md += "\n\n" + _why_no_sections(src, stacked_file, vs, mute)
     elif vs.data_transform is None:
         md += "\n\nFull stack ready, but the IL / XL sections need the **Survey grid** of the 📁 Data card."
     else:
         il, xl = stack_mod.cdp_ilxl(idx, vs.data_transform)
         il_v = int(section_il) or stack_mod.most_common(il)
         xl_v = int(section_xl) or stack_mod.most_common(xl)
+        snapped = []
+        for name, arr, val in (("IL", il, il_v), ("XL", xl, xl_v)):
+            if not (arr == val).any():                    # no CDP on that line: the nearest line that has CDPs
+                u = np.unique(arr)
+                near = int(u[np.argmin(np.abs(u - val))])
+                snapped.append(f"{name} {val} has no CDPs (the data covers {name} {int(u[0])} – {int(u[-1])}) - "
+                               f"showing the nearest, {name} {near}")
+                if name == "IL":
+                    il_v = near
+                else:
+                    xl_v = near
         data = fs.data
         il_rows, xl_rows = stack_mod.section_rows(il, xl, il_v), stack_mod.section_rows(xl, il, xl_v)
         il_res = (il_rows[1], np.asarray(data[il_rows[0]], np.float64)) if il_rows else None
@@ -670,7 +722,8 @@ def cdp_stack_step(state: PipeState, fig_height: float = 6.0, cdp_pick: str = ""
                + (f"the data processed by {' → '.join(src.labels)}" if src.specs else "the raw data")
                + f" stacked ({stack_mod.describe(vs, mute, None, {})}; made "
                f"{fs.meta.get('created', '')}, {fs.meta.get('seconds', 0):,.0f} s). Sections at IL {il_v} and XL {xl_v}"
-               + ("" if il_res and xl_res else " - one of them has no CDPs: pick another IL / XL") + ".")
+               + ("" if il_res and xl_res else " - one of them has no CDPs: pick another IL / XL") + "."
+               + "".join(f"  \n⚠ {t_}" for t_ in snapped))
         out.append(figure(f"Stacked sections IL {il_v} / XL {xl_v}",
                           plotting.plot_stack_sections(il_res, xl_res, il_v, xl_v, full_t, clip_pct=nmo_clip_pct,
                                                        fig_height=fig_height + 0.5)))
