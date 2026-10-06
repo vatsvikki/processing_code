@@ -606,19 +606,17 @@ def _why_no_sections(src, stacked_file, vs, mute: float = 0.0) -> str:
                        "flow with other processing steps replaced it (only one is kept, each is as big as the input). "
                        f"{run}.")
     else:
-        others = []
-        folder = _Path(DEFAULT_DIR) / "stacks"
-        for meta in folder.glob(f"{_Path(stacked_file).stem}_*/meta.json") if stacked_file else []:
-            try:
-                m = json.loads(meta.read_text())
-            except (OSError, ValueError):
-                continue
-            if m.get("done"):
-                others.append(f"{m.get('created', '')}: {m.get('describe', '')}")
+        try:
+            others = stack_mod.compare_stacks(stacked_file, vs, mute, None,
+                                              {"raw": False, "post_nmo": False, "stack": False}) if stacked_file else []
+        except Exception:
+            others = []
         if others:
-            reasons.append(f"{what[0].upper() + what[1:]} was stacked before, but with **other settings** than now "
-                           f"(now: {stack_mod.describe(vs, mute, None, {})} - e.g. the NMO velocity or the stretch mute "
-                           f"changed since). Stacks there: " + "; ".join(sorted(others)[-3:]) + f". {run} again.")
+            lines = [f"- stack of {made}: differs in " + "; ".join(diffs) for made, diffs in others[:3]]
+            reasons.append(f"{what[0].upper() + what[1:]} was stacked before, but not with the settings now - a stack "
+                           "is used only when every setting matches. What differs from the stack(s) there:\n\n"
+                           + "\n".join(lines) + f"\n\nSet those back to use a stack, or {run} again with the settings "
+                           "now.")
         elif job is None:
             reasons.append(f"No full stack of {what} yet. {run} to stack every CDP - the IL / XL stacked sections"
                            + (", velocity sections and overlay" if vs.nmo else "") + " then show here.")

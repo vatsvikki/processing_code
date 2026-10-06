@@ -89,6 +89,66 @@ def cached(path: str, idx: CdpIndex, vs: VelocitySetup, mute_pct: float, band, s
     return FullStack(folder, idx.cdps, idx.mid_x, idx.mid_y, int(meta["ns"]), float(meta["dt_ms"]), meta)
 
 
+_SETTING_NAMES = {"velocity_model_type": "velocity model type", "model_domain": "velocity model domain",
+                  "model_sample_interval": "velocity model sample interval",
+                  "model_velocity_units": "velocity model unit", "output_velocity_units": "output velocity unit"}
+
+
+def _key_differences(now: tuple, then: tuple) -> list[str]:
+    """In words, what differs between two stack keys (see _signature): (file, mtime, traces, velocity signature, unit,
+    mute, filter band, filter stages)."""
+    out = []
+    if now[1] != then[1]:
+        out.append("the stacked data file was written again since (e.g. the whole-data run of the steps above was made "
+                   "again, or the file was replaced)")
+    if now[2] != then[2]:
+        out.append(f"the data file has {now[2]:,} traces now, {then[2]:,} then")
+    vn, vt = now[3] or ("none",), then[3] or ("none",)
+    if vn[0] != vt[0]:
+        names = {"model": "a velocity model", "function": "a velocity function", "none": "no NMO"}
+        out.append(f"velocity: now {names.get(vn[0], vn[0])}, the stack used {names.get(vt[0], vt[0])}")
+    elif vn[0] == "model":
+        if vn[1] != vt[1]:
+            out.append(f"velocity model file: now {os.path.basename(vn[1])}, the stack used {os.path.basename(vt[1])}")
+        elif vn[2] != vt[2]:
+            out.append("the velocity model file was changed since")
+        sn, st = dict(vn[3]), dict(vt[3])
+        for k in sorted(set(sn) | set(st)):
+            if sn.get(k) != st.get(k):
+                out.append(f"{_SETTING_NAMES.get(k, k)}: now **{sn.get(k)}**, the stack used **{st.get(k)}**")
+        if vn[4] != vt[4]:
+            out.append("the velocity model's corner points (its grid registration)")
+    elif vn[0] == "function" and vn[1:] != vt[1:]:
+        out.append("the velocity function values (or its unit)")
+    if now[4] != then[4]:
+        out.append(f"velocity unit: now {now[4]}, then {then[4]}")
+    if now[5] != then[5]:
+        out.append(f"stretch mute: now {now[5]} %, the stack used {then[5]} %")
+    if now[6] != then[6] or now[7] != then[7]:
+        out.append("the filter (band or where it is applied)")
+    return out or ["a detail of the settings"]
+
+
+def compare_stacks(path: str, vs: VelocitySetup, mute_pct: float, band, stages: dict) -> list[tuple[str, list[str]]]:
+    """The stacks already made of this same file, newest first: [(made when, [what differs from the settings now]), ...]."""
+    import ast
+    _, key_now = _signature(path, vs, mute_pct, band, stages)
+    now = ast.literal_eval(key_now)
+    file_now = segy_io.open_segy(path).path
+    out = []
+    for meta in (Path(DEFAULT_DIR) / "stacks").glob(f"{Path(path).stem}_*/meta.json"):
+        try:
+            m = json.loads(meta.read_text())
+            if not m.get("done") or m.get("file") != file_now:      # (another file whose name starts the same)
+                continue
+            then = ast.literal_eval(m["key"])
+        except (OSError, ValueError, KeyError, SyntaxError):
+            continue
+        if then != now:                                     # (an identical one would have been used)
+            out.append((m.get("created", ""), _key_differences(now, then)))
+    return sorted(out, reverse=True)
+
+
 def describe(vs: VelocitySetup, mute_pct: float, band, stages: dict) -> str:
     """The settings of a stack in words (kept with it)."""
     vel = {"model": "velocity model", "function": "velocity function", "none": "no NMO (plain mean of the gathers)"}.get(
