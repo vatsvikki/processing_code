@@ -691,6 +691,13 @@ result is written once more (output/flows) - those steps need the data sorted by
 functions (e.g. only the stack settings changed) reuses it. 🌐✓ beside a function = done on the whole data with these
 settings. Results of earlier settings that the flow can no longer use are deleted (each is as big as the input).
 
+**Before / after.** Viewing the stage of a processing function (Spiking Decon, Bandpass, AGC, gain, mute ...) adds
+a **Before / After** flip-flop right under the gather: click the tabs to switch between the gather that function got
+and the one it made, in the same place, with the display settings on screen (zoom window, trace order, AGC) and the
+same clip - so only the function's effect changes. When the function is not the first one, the spectrum and
+autocorrelation of its own input against its output are shown too (e.g. the whitening of a decon after a filter).
+F-K Filter and Radon Filter have their own flip-flops (with the removed noise).
+
 **Runs in the background.** A whole-data run is a process of its own on the machine: it goes on when you close the
 app, the browser, the SSH connection or the laptop, and the card at the bottom right shows it again (with its
 progress) when you open the app again. The card says which steps of the flow run now - e.g. *Steps 1–3 of 5: Spiking
