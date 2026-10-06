@@ -854,7 +854,17 @@ def _(np):
         cb.ax.tick_params(labelsize=7)
         cb.outline.set_linewidth(0.5)
 
-    def plot_sections(il_result, xl_result, il_value, xl_value, y_max, y_label, *, clip_pct=98.0, fig_height=7.5):
+    def _limits(axes, y_max, xlim_il=None, xlim_xl=None, ylim=None):
+        """The axis windows: x of the IL section (its XL range), x of the XL section (its IL range), the vertical
+        range (shared) - each None = all."""
+        axes[0].set_ylim(*(ylim[::-1] if ylim else (y_max, 0)))
+        if xlim_il:
+            axes[0].set_xlim(*xlim_il)
+        if xlim_xl:
+            axes[1].set_xlim(*xlim_xl)
+
+    def plot_sections(il_result, xl_result, il_value, xl_value, y_max, y_label, *, clip_pct=98.0, fig_height=7.5,
+                      xlim_il=None, xlim_xl=None, ylim=None):
         """IL section (fixed IL, varying XL) left, XL section right, same vertical axis - as the app's stack."""
         fig, axes = _two_sections(fig_height)
         for ax, result, fixed_label, fixed_val, vary_label in ((axes[0], il_result, "IL", il_value, "XL"),
@@ -867,13 +877,13 @@ def _(np):
             ax.imshow(section.T, aspect="auto", cmap="gray", vmin=-vclip, vmax=vclip, extent=_extent(vary_vals, y_max))
             ax.set_title(f"{fixed_label}={int(fixed_val)}, {len(vary_vals)} CDPs")
             ax.set_xlabel(vary_label)
-        axes[0].set_ylim(y_max, 0)
+        _limits(axes, y_max, xlim_il, xlim_xl, ylim)
         axes[0].set_ylabel(y_label)
         fig.tight_layout()
         return fig
 
     def plot_velocity_sections(il_result, xl_result, il_value, xl_value, y_max, y_label, kind="interval", *,
-                               fig_height=7.5):
+                               fig_height=7.5, xlim_il=None, xlim_xl=None, ylim=None):
         """Velocity along the same two lines (gray = beyond the velocity model's own range)."""
         cmap = _mpl.colormaps["viridis"].copy()
         cmap.set_bad(color="lightgray")
@@ -888,7 +898,7 @@ def _(np):
             im = ax.imshow(section.T, aspect="auto", cmap=cmap, extent=_extent(vary_vals, y_max))
             ax.set_title(f"{fixed_label}={int(fixed_val)} {kind} velocity")
             ax.set_xlabel(vary_label)
-        axes[0].set_ylim(y_max, 0)
+        _limits(axes, y_max, xlim_il, xlim_xl, ylim)
         axes[0].set_ylabel(y_label)
         if im is not None:
             _inset_colorbar(fig, axes[0], im)
@@ -896,7 +906,7 @@ def _(np):
         return fig
 
     def plot_overlay_sections(il_result, xl_result, il_value, xl_value, y_max, y_label, kind="interval", *,
-                              clip_pct=98.0, fig_height=7.5):
+                              clip_pct=98.0, fig_height=7.5, xlim_il=None, xlim_xl=None, ylim=None):
         """The velocity in colour (half transparent) over the grayscale section; where the model has no data the
         section shows through."""
         cmap = _mpl.colormaps["viridis"].copy()
@@ -915,7 +925,7 @@ def _(np):
             im = ax.imshow(vel.T, aspect="auto", cmap=cmap, alpha=0.5, extent=extent)
             ax.set_title(f"{fixed_label}={int(fixed_val)} + {kind} vel, {len(vary_vals)} CDPs")
             ax.set_xlabel(vary_label)
-        axes[0].set_ylim(y_max, 0)
+        _limits(axes, y_max, xlim_il, xlim_xl, ylim)
         axes[0].set_ylabel(y_label)
         if im is not None:
             _inset_colorbar(fig, axes[0], im)
@@ -926,7 +936,7 @@ def _(np):
 
 
 @app.cell(hide_code=True)
-def _(explain, img, img_ilv, img_xlv, mo, np, records):
+def _(d2t, explain, img, img_ilv, img_xlv, mo, np, records):
     # ---- 4. plot: an IL section and an XL section, before and after (as the app's CDP Stack) ------------------------
     # default lines: through the middle of the LIVE data - every 4th inline / crossline looked at (1/16 of the traces,
     # 3 samples each), so the large file is not read in full
@@ -952,16 +962,31 @@ def _(explain, img, img_ilv, img_xlv, mo, np, records):
     sec_xl = mo.ui.slider(steps=[int(x) for x in _xlu], value=_mid(img_xlv, _xlu), show_value=True, include_input=True,
                           full_width=True, debounce=True, label="Fixed XL (crossline section)")
     clip_pct = mo.ui.number(value=98.0, start=80, stop=100, step=0.5, label="Amplitude clip percentile")
-    fig_height = mo.ui.number(value=7.0, start=3, stop=14, step=0.5, label="Figure height, inches")
+    fig_height = mo.ui.number(value=6.0, start=3, stop=14, step=0.5, label="Figure height, inches")
+    # axis windows (0 / 0 = all): x of each panel and the vertical range of the input / output figures
+    _num = lambda lab: mo.ui.number(value=0, step=1, label=lab)
+    lim_xl0, lim_xl1 = _num("IL section: from XL"), _num("to XL")
+    lim_il0, lim_il1 = _num("XL section: from IL"), _num("to IL")
+    lim_in0, lim_in1 = _num(f"Input figure: from ({'depth' if d2t else 'ms'})"), _num("to")
+    lim_out0, lim_out1 = _num(f"Output figures: from ({'ms' if d2t else 'depth'})"), _num("to")
     mo.vstack([mo.md("## 4. Sections before and after"), sec_il, sec_xl,
                mo.hstack([clip_pct, fig_height], justify="start", gap=1),
+               mo.md("**Axis limits** (0 and 0 = the whole axis)"),
+               mo.hstack([lim_xl0, lim_xl1, lim_il0, lim_il1], justify="start", gap=1, wrap=True),
+               mo.hstack([lim_in0, lim_in1, lim_out0, lim_out1], justify="start", gap=1, wrap=True),
                explain("""
 - **Fixed IL** - the inline section shown (all crosslines of that inline), left panel of every figure.
 - **Fixed XL** - the crossline section shown (all inlines of that crossline), right panel. Both start in the middle of
   the live data.
 - **Amplitude clip percentile** - the gray scale is clipped at this percentile of |amplitude| of each section (98 =
   the strongest 2 % saturate); lower = weak events stand out more. The same clip rule as the app's CDP Stack.
-- **Figure height** - height of the figures in inches (the width is fixed at 12, as in the app).
+- **Figure height** - height of the figures in inches; the width is 12 inches. 6 (the default) gives the same size as
+  the CDP Stack sections of the app's Flow (12 × 6.5 inches, 110 dpi).
+- **Axis limits** - the window of the figures (0 and 0 = the whole axis): **IL section: from / to XL** = the horizontal
+  range of the left panel (the inline section runs along the crosslines); **XL section: from / to IL** = the horizontal
+  range of the right panel; **Input figure: from / to** = the vertical range of the input sections (depth or ms);
+  **Output figures: from / to** = the vertical range of the output, velocity and overlay sections. The figure size stays
+  the same - the window is stretched to fill it. Saved figures show the same window.
 
 The figures: the **input** sections, the **output** sections, the **interval velocity** used along the two lines on the
 output axis (gray = below the velocity file: there the conversion uses the 'below' choice of step 2), the output with
@@ -969,14 +994,14 @@ the velocity on top, and the depth ↔ time curve with the two lines on the surv
 writes them as files.
 """),
                ])
-    return clip_pct, fig_height, sec_il, sec_xl
+    return clip_pct, fig_height, lim_il0, lim_il1, lim_in0, lim_in1, lim_out0, lim_out1, lim_xl0, lim_xl1, sec_il, sec_xl
 
 
 @app.cell(hide_code=True)
 def _(antialias, clip_pct, convert_block, corner_fit, d2t, fig_height, ilxl_to_xy, img, img_ilv, img_xlv, in_axis,
-      in_axis_si, in_len, in_ylabel, mo, model_end, np, out_axis, out_axis_si, out_ylabel, plot_overlay_sections,
-      plot_sections, plot_velocity_sections, plt, records, samples_of, sec_il, sec_xl, time, twt_at, v_unit,
-      velocity_on_output):
+      in_axis_si, in_len, in_ylabel, lim_il0, lim_il1, lim_in0, lim_in1, lim_out0, lim_out1, lim_xl0, lim_xl1, mo,
+      model_end, np, out_axis, out_axis_si, out_ylabel, plot_overlay_sections, plot_sections, plot_velocity_sections,
+      plt, records, samples_of, sec_il, sec_xl, time, twt_at, v_unit, velocity_on_output):
     _t0 = time.perf_counter()
 
     def _line(fixed, value, along):
@@ -992,17 +1017,24 @@ def _(antialias, clip_pct, convert_block, corner_fit, d2t, fig_height, ilxl_to_x
     _xl = _line(img_xlv, sec_xl.value, img_ilv)
     _secs = time.perf_counter() - _t0
     _cp, _fh = float(clip_pct.value), float(fig_height.value) + 0.5
+
+    def _rng(a, b):                                          # (from, to) or None when both are 0 / empty
+        a, b = float(a.value or 0), float(b.value or 0)
+        return None if a == 0 and b == 0 else (min(a, b), max(a, b))
+
+    _lim = dict(xlim_il=_rng(lim_xl0, lim_xl1), xlim_xl=_rng(lim_il0, lim_il1))
+    _lim_in, _lim_out = dict(_lim, ylim=_rng(lim_in0, lim_in1)), dict(_lim, ylim=_rng(lim_out0, lim_out1))
     _pick = lambda r, i: None if r is None else (r[0], r[i])
     _in_name, _out_name = ("Depth", "Time") if d2t else ("Time", "Depth")
     _f_in = plot_sections(_pick(_il, 1), _pick(_xl, 1), sec_il.value, sec_xl.value, float(in_axis[-1]), in_ylabel,
-                          clip_pct=_cp, fig_height=_fh)
+                          clip_pct=_cp, fig_height=_fh, **_lim_in)
     _f_out = plot_sections(_pick(_il, 2), _pick(_xl, 2), sec_il.value, sec_xl.value, float(out_axis[-1]), out_ylabel,
-                           clip_pct=_cp, fig_height=_fh)
+                           clip_pct=_cp, fig_height=_fh, **_lim_out)
     _f_vel = plot_velocity_sections(_pick(_il, 3), _pick(_xl, 3), sec_il.value, sec_xl.value, float(out_axis[-1]),
-                                    out_ylabel, fig_height=_fh)
+                                    out_ylabel, fig_height=_fh, **_lim_out)
     _ov = lambda r: None if r is None else (r[0], r[2], r[3])
     _f_ov = plot_overlay_sections(_ov(_il), _ov(_xl), sec_il.value, sec_xl.value, float(out_axis[-1]), out_ylabel,
-                                  clip_pct=_cp, fig_height=_fh)
+                                  clip_pct=_cp, fig_height=_fh, **_lim_out)
     # depth <-> time used (middle trace of each line) and where the lines are
     _f_tz, (_a1, _a2) = plt.subplots(1, 2, figsize=(12.0, 4.0), gridspec_kw={"width_ratios": [40, 60]})
     _du = 0.3048 if in_len.value == "ft" else 1.0
