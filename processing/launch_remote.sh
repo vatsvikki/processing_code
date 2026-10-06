@@ -53,6 +53,7 @@ if [ "${NO_SYNC:-0}" != 1 ]; then
         --exclude '.env' --exclude '.venv/' --exclude 'output/' --exclude '__pycache__/' \
         --exclude '.DS_Store' --exclude '*.pyc' --exclude '__marimo__/' \
         --exclude 'notebooks/qc_plots/' --exclude 'notebooks/ilxl_corner_table.json' \
+        --exclude 'notebooks/depth_to_time_settings.json' --exclude 'notebooks/output/' \
         ./ "$HOST_ALIAS:$REMOTE_DIR/"
 fi
 

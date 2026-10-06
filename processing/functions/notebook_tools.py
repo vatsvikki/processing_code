@@ -18,3 +18,11 @@ NOTEBOOK_DIR = Path(__file__).resolve().parent.parent / "notebooks"
           "(shot_geometry_qc_marimo.py).", order=20, kind="notebook", category="Tools")
 def shot_geometry_qc(path: str = "", **_):
     return str(NOTEBOOK_DIR / "shot_geometry_qc_marimo.py")
+
+
+@register("Depth ↔ Time Conversion", "Converts a seismic image between depth and two-way time with a velocity (a "
+          "velocity SEG-Y, a constant or a velocity function): input / output parameters, corner points, IL / XL "
+          "sections before and after as in CDP Stack, saved figures and the converted SEG-Y (depth_to_time_marimo.py).",
+          order=21, kind="notebook", category="Tools")
+def depth_time_conversion(path: str = "", **_):
+    return str(NOTEBOOK_DIR / "depth_to_time_marimo.py")

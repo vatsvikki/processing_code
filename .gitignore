@@ -22,6 +22,9 @@ indvidual_codes/Miniconda3-*.sh
 indvidual_codes/*.json
 !indvidual_codes/ilxl_corner_table.json
 processing/notebooks/ilxl_corner_table.json
+processing/notebooks/depth_to_time_settings.json
+processing/notebooks/output/
+indvidual_codes/output/
 
 # ---- third-party clone (github.com/trustimaging/stride)
 processing/stride/

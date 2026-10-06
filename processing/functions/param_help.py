@@ -634,6 +634,22 @@ recalculated ones), the equations with your numbers, the four **corner points** 
 CDP and recalculated CDP, each by midpoint and on the IL / XL grid; full-resolution PNGs) and the first 5,000 traces
 (header vs recalculated). **Write a SEG-Y with the recalculated CDP** copies the file with only bytes 21-24 replaced.
 """,
+    "depth_time_conversion": r"""
+**What it does.** Runs the notebook *depth_to_time_marimo.py* in its own tab: converts a seismic image (a migrated
+section, a stack) **from depth to two-way time, or from time to depth**, with a velocity.
+
+**Steps.** 0. the direction · 1. the input file, its vertical sampling, IL / XL bytes and corner points · 2. the
+velocity: a velocity SEG-Y (interval / RMS / average, in depth or time, matched to the image through the corner points
+or the same IL / XL), a constant, or a velocity function you type - and what to do below the velocity model · 3. the
+output sampling and length · 4. IL / XL sections before and after, the velocity used and an overlay, drawn exactly as
+CDP Stack's sections, with **💾 Save figures** (png / pdf / svg) · 5. the converted SEG-Y.
+
+**The maths.** Depth and time are linked by the interval velocity: t(z) = 2 ∫ dz / V(z). Depth → time moves every
+depth sample to t(z); time → depth moves every time sample to the depth where t(z) = t. Amplitudes are mapped onto the
+regular output axis with an anti-alias filter. Every step of the notebook has an **ⓘ What the parameters mean** panel.
+
+Independent of the Flow; the answers are saved per input file (notebooks/depth_to_time_settings.json).
+""",
     "shot_geometry_qc": r"""
 **What it does.** Runs the notebook *shot_geometry_qc_marimo.py* as it is, in its own tab: a check that each shot's
 geometry is right, from its first arrivals.
