@@ -168,6 +168,7 @@ def plot_gather(
     if handles:
         ax.legend(handles=handles, loc="lower right", bbox_to_anchor=(1.0, 1.0), ncol=len(handles),
                   frameon=False, fontsize=10, labelcolor=INK_2, borderaxespad=0.3)
+    fig.qc_clip = clip                                  # the amplitude clip used (for plots that must match)
     return fig
 
 

@@ -693,8 +693,13 @@ settings. Results of earlier settings that the flow can no longer use are delete
 
 **Before / after.** Viewing the stage of a processing function (Spiking Decon, Bandpass, AGC, gain, mute ...) adds
 a **Before / After** flip-flop right under the gather: click the tabs to switch between the gather that function got
-and the one it made, in the same place, with the display settings on screen (zoom window, trace order, AGC) and the
-same clip - so only the function's effect changes. When the function is not the first one, the spectrum and
+and the one it made, in the same place, with the display settings on screen (zoom window, trace order, AGC). The clip
+is computed exactly as the main plot computes it, and each tab's title shows it:
+- **gain functions** (Geometric Spreading, AGC) change the amplitude level on purpose, so **each tab has its own clip**
+  - *After* is then exactly the main plot, and the tabs compare the amplitude *balance* (at one clip a t² gain would
+  saturate the deep part and blank the shallow part);
+- **all other functions** (decon, filters, mute ...): **both tabs at the input's clip** - so only the function's effect
+  on the data changes between the tabs. When the function is not the first one, the spectrum and
 autocorrelation of its own input against its output are shown too (e.g. the whitening of a decon after a filter).
 F-K Filter and Radon Filter have their own flip-flops (with the removed noise).
 
