@@ -112,19 +112,13 @@ def file_headers(path: str, ffid: int = 0, trace: int = 1):
 # ---------------------------------------------------------------------------
 # Flow: the processing functions chained, added / removed / reordered in the UI
 # ---------------------------------------------------------------------------
-_GAIN_STEPS = {"geometric_spreading", "agc_gain"}      # change the amplitude level on purpose
-
-
 def _before_after(prev, st, disp: dict, step_key: str = "") -> list:
-    """Before / after one processing function: a flip-flop of the shot gather it got and the one it made, drawn with
-    the display settings on screen (zoom window, trace order, AGC, flagged traces) and the clip computed exactly as the
-    main plot computes it:
-    - a gain function (Geometric Spreading, AGC) changes the amplitude level on purpose: each tab at its OWN clip, so
-      'After' is exactly the main plot and the tabs compare the amplitude balance;
-    - any other function: both tabs at the clip of its input ('Before'), so what changes is the data, not the scale.
-    When it is not the first function, the spectrum / autocorrelation of its own input against its output follow."""
+    """Before / after one processing function: a flip-flop of the shot gather it got and the one it made, each drawn
+    exactly as the main plot draws that stage - the display settings on screen (zoom window, trace order, AGC, flagged
+    traces) and its own clip computed the same way: 'After' is the main plot, 'Before' the main plot of the stage
+    before. When it is not the first function, the spectrum / autocorrelation of its own input against its output
+    follow."""
     gb, ga = prev.state.gather, st.state.gather
-    own = step_key in _GAIN_STEPS or bool(disp.get("agc_ms"))   # (display AGC scales every tab anyway)
     sort = disp.get("sort_by", "file")
 
     def _plot(label, g_, state_, clip):
@@ -138,18 +132,17 @@ def _before_after(prev, st, disp: dict, step_key: str = "") -> list:
 
     f_before = _plot("Before", gb, prev.state, None)            # its own clip - as the main plot of that stage
     c_before = getattr(f_before, "qc_clip", None)
-    f_after = _plot("After", ga, st.state, None if own else c_before)
+    f_after = _plot("After", ga, st.state, None)
     c_after = getattr(f_after, "qc_clip", None)
-    for fig, c, how in ((f_before, c_before, "its own" if own else "used for both tabs"),
-                        (f_after, c_after, "its own - as the main plot" if own else "the input's - same as Before")):
+    for fig, c, how in ((f_before, c_before, "as the main plot of the stage before"),
+                        (f_after, c_after, "as the main plot")):
         ax = fig.axes[0]                                      # (plot_gather's title sits on the left)
         if c:
             ax.set_title(ax.get_title(loc="left") + f"   [clip {c:.4g}, {how}]", loc="left",
                          fontsize=ax.title.get_fontsize() if not ax._left_title.get_text() else
                          ax._left_title.get_fontsize(), color=ax._left_title.get_color())
-    how = ("each tab at its own clip (a gain: compare the balance)" if own
-           else "both tabs at the input's clip (compare the data)")
-    out = [flip(f"Before / after {st.label} - {how}", [("Before", f_before), ("After", f_after)])]
+    out = [flip(f"Before / after {st.label} - each tab as the main plot (its own clip)",
+                [("Before", f_before), ("After", f_after)])]
     if prev.label.split(".")[0] != "0":                      # not the first function: its own input vs output
         out.append(figure(f"Spectrum and autocorrelation - {st.label} vs its input ({prev.label})",
                           plotting.plot_spectrum_acorr(gb.data, ga.data, ga.dt_ms, (f"before ({prev.label})", st.label))))
