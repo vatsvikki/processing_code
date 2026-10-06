@@ -641,6 +641,16 @@ def _two_sections(fig_height):
     return fig, axes
 
 
+def _limits(axes, y_max_ms, xlim_il=None, xlim_xl=None, ylim=None):
+    """The windows of a two-section figure: x of the IL section (its XL range), x of the XL section (its IL range),
+    the shared time range - each None = all."""
+    axes[0].set_ylim(*(ylim[::-1] if ylim else (y_max_ms, 0)))
+    if xlim_il:
+        axes[0].set_xlim(*xlim_il)
+    if xlim_xl:
+        axes[1].set_xlim(*xlim_xl)
+
+
 def _extent(vary_vals, y_max_ms):
     a, b = float(vary_vals[0]), float(vary_vals[-1])
     if a == b:                                          # one CDP on the line: give it a visible width
@@ -654,7 +664,8 @@ def _empty(ax, fixed_label, fixed_val):
 
 
 def plot_stack_sections(il_result, xl_result, il_value: int, xl_value: int, full_t: np.ndarray, *,
-                        clip_pct: float = 98.0, fig_height: float = 6.5) -> Figure:
+                        clip_pct: float = 98.0, fig_height: float = 6.5, xlim_il=None, xlim_xl=None,
+                        ylim=None) -> Figure:
     """The notebook's stacked sections: IL section (fixed IL, varying XL) left, XL section right, same time axis.
     *_result = (vary values, section [n, ns]) or None."""
     y_max_ms = full_t[-1] * 1000.0
@@ -670,7 +681,7 @@ def plot_stack_sections(il_result, xl_result, il_value: int, xl_value: int, full
                   extent=_extent(vary_vals, y_max_ms))
         ax.set_title(f"{fixed_label}={int(fixed_val)}, {len(vary_vals)} CDPs")
         ax.set_xlabel(vary_label)
-    axes[0].set_ylim(y_max_ms, 0)
+    _limits(axes, y_max_ms, xlim_il, xlim_xl, ylim)
     axes[0].set_ylabel("Time (ms)")
     fig.tight_layout()
     return fig
@@ -684,7 +695,7 @@ def _inset_colorbar(fig, ax, im):
 
 
 def plot_velocity_sections(il_result, xl_result, il_value: int, xl_value: int, full_t: np.ndarray, kind: str = "RMS", *,
-                           fig_height: float = 6.5) -> Figure:
+                           fig_height: float = 6.5, xlim_il=None, xlim_xl=None, ylim=None) -> Figure:
     """The notebook's velocity model sections along the same two lines (gray = beyond the model's own range).
     *_result = (vary values, velocity section [n, ns] with NaN beyond the model) or None."""
     import matplotlib
@@ -702,7 +713,7 @@ def plot_velocity_sections(il_result, xl_result, il_value: int, xl_value: int, f
         im = ax.imshow(section.T, aspect="auto", cmap=cmap, extent=_extent(vary_vals, y_max_ms))
         ax.set_title(f"{fixed_label}={int(fixed_val)} {kind.lower()} velocity")
         ax.set_xlabel(vary_label)
-    axes[0].set_ylim(y_max_ms, 0)
+    _limits(axes, y_max_ms, xlim_il, xlim_xl, ylim)
     axes[0].set_ylabel("Time (ms)")
     if im is not None:
         _inset_colorbar(fig, axes[0], im)
@@ -711,7 +722,8 @@ def plot_velocity_sections(il_result, xl_result, il_value: int, xl_value: int, f
 
 
 def plot_overlay_sections(il_result, xl_result, il_value: int, xl_value: int, full_t: np.ndarray, kind: str = "RMS", *,
-                          clip_pct: float = 98.0, fig_height: float = 6.5) -> Figure:
+                          clip_pct: float = 98.0, fig_height: float = 6.5, xlim_il=None, xlim_xl=None,
+                          ylim=None) -> Figure:
     """The notebook's overlay: the velocity in colour (half transparent) over the grayscale stack; where the model has no
     data the stack shows through. *_result = (vary values, stack section, velocity section) or None."""
     import matplotlib
@@ -732,7 +744,7 @@ def plot_overlay_sections(il_result, xl_result, il_value: int, xl_value: int, fu
         im = ax.imshow(vel_section.T, aspect="auto", cmap=cmap, alpha=0.5, extent=extent)
         ax.set_title(f"{fixed_label}={int(fixed_val)} + {kind.lower()} vel, {len(vary_vals)} CDPs")
         ax.set_xlabel(vary_label)
-    axes[0].set_ylim(y_max_ms, 0)
+    _limits(axes, y_max_ms, xlim_il, xlim_xl, ylim)
     axes[0].set_ylabel("Time (ms)")
     if im is not None:
         _inset_colorbar(fig, axes[0], im)

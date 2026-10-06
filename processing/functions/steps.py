@@ -645,13 +645,32 @@ def _why_no_sections(src, stacked_file, vs, mute: float = 0.0) -> str:
                 choices=["RMS", "Interval"], live=True, group="Sections"),
           Param("nmo_clip_pct", "Amplitude clip percentile  (all image plots)", "float", 98.0, min=80, max=100,
                 step=0.5, live=True, group="Sections"),
+          Param("sec_xl_from", "IL section: from XL  (0 and 0 = all)", "int", 0, min=0, step=1, live=True,
+                group="Section axis limits",
+                help="Horizontal window of the left panel: the inline section runs along the crosslines"),
+          Param("sec_xl_to", "IL section: to XL", "int", 0, min=0, step=1, live=True, group="Section axis limits"),
+          Param("sec_il_from", "XL section: from IL  (0 and 0 = all)", "int", 0, min=0, step=1, live=True,
+                group="Section axis limits",
+                help="Horizontal window of the right panel: the crossline section runs along the inlines"),
+          Param("sec_il_to", "XL section: to IL", "int", 0, min=0, step=1, live=True, group="Section axis limits"),
+          Param("sec_t_from", "Sections: from time, ms  (0 and 0 = all)", "float", 0.0, min=0, step=100, live=True,
+                group="Section axis limits", help="Vertical window of the stacked, velocity and overlay sections"),
+          Param("sec_t_to", "Sections: to time, ms", "float", 0.0, min=0, step=100, live=True,
+                group="Section axis limits"),
       ],
       order=74, category="Display")
 def cdp_stack_step(state: PipeState, fig_height: float = 6.0, cdp_pick: str = "", cdp_number: int = 0,
                    section_il: int = 0, section_xl: int = 0, section_velocity_type: str = "RMS",
-                   nmo_clip_pct: float = 98.0):
+                   nmo_clip_pct: float = 98.0, sec_xl_from: int = 0, sec_xl_to: int = 0, sec_il_from: int = 0,
+                   sec_il_to: int = 0, sec_t_from: float = 0.0, sec_t_to: float = 0.0):
     if state.batch:            # nothing displays this inside a whole-data run - skip it for every shot
         return state, "stack not built (whole-data run)"
+
+    def _rng(a, b):                                        # (from, to), or None for 0 and 0 = the whole axis
+        return None if not a and not b else (min(a, b), max(a, b))
+
+    win = dict(xlim_il=_rng(sec_xl_from, sec_xl_to), xlim_xl=_rng(sec_il_from, sec_il_to),
+               ylim=_rng(sec_t_from, sec_t_to))
     # the input: the NMO-corrected gathers of an NMO Correction step above (its velocity and mute), or the CDP gathers
     chained = nmo_settings_of(state.flow)
     if chained is not None:
@@ -726,7 +745,7 @@ def cdp_stack_step(state: PipeState, fig_height: float = 6.0, cdp_pick: str = ""
                + "".join(f"  \n⚠ {t_}" for t_ in snapped))
         out.append(figure(f"Stacked sections IL {il_v} / XL {xl_v}",
                           plotting.plot_stack_sections(il_res, xl_res, il_v, xl_v, full_t, clip_pct=nmo_clip_pct,
-                                                       fig_height=fig_height + 0.5)))
+                                                       fig_height=fig_height + 0.5, **win)))
         if vs.nmo:
             def _vel(rows_res):
                 return None if rows_res is None else (rows_res[1], stack_mod.velocity_rows(vs, idx, rows_res[0],
@@ -734,12 +753,12 @@ def cdp_stack_step(state: PipeState, fig_height: float = 6.0, cdp_pick: str = ""
             il_vel, xl_vel = _vel(il_rows), _vel(xl_rows)
             out.append(figure(f"Velocity sections IL {il_v} / XL {xl_v}",
                               plotting.plot_velocity_sections(il_vel, xl_vel, il_v, xl_v, full_t, section_velocity_type,
-                                                              fig_height=fig_height + 0.5)))
+                                                              fig_height=fig_height + 0.5, **win)))
             ov = lambda s_, v_: None if s_ is None else (s_[0], s_[1], v_[1])
             out.append(figure(f"Stack + velocity IL {il_v} / XL {xl_v}",
                               plotting.plot_overlay_sections(ov(il_res, il_vel), ov(xl_res, xl_vel), il_v, xl_v, full_t,
                                                              section_velocity_type, clip_pct=nmo_clip_pct,
-                                                             fig_height=fig_height + 0.5)))
+                                                             fig_height=fig_height + 0.5, **win)))
     md += "\n\n" + src.describe() + "".join(f"\n\n{n}" for n in notes)
     out.insert(0, markdown("CDP stack", md))
     return replace(state, view_extra=out), (f"CDP {cdp} stacked" + (f"; full stack {len(fs.cdps):,} CDPs" if fs else ""))

@@ -962,7 +962,7 @@ def _(d2t, explain, img, img_ilv, img_xlv, mo, np, records):
     sec_xl = mo.ui.slider(steps=[int(x) for x in _xlu], value=_mid(img_xlv, _xlu), show_value=True, include_input=True,
                           full_width=True, debounce=True, label="Fixed XL (crossline section)")
     clip_pct = mo.ui.number(value=98.0, start=80, stop=100, step=0.5, label="Amplitude clip percentile")
-    fig_height = mo.ui.number(value=6.0, start=3, stop=14, step=0.5, label="Figure height, inches")
+    fig_height = mo.ui.number(value=7.0, start=3, stop=14, step=0.5, label="Figure height, inches")
     # axis windows (0 / 0 = all): x of each panel and the vertical range of the input / output figures
     _num = lambda lab: mo.ui.number(value=0, step=1, label=lab)
     lim_xl0, lim_xl1 = _num("IL section: from XL"), _num("to XL")
@@ -980,8 +980,8 @@ def _(d2t, explain, img, img_ilv, img_xlv, mo, np, records):
   the live data.
 - **Amplitude clip percentile** - the gray scale is clipped at this percentile of |amplitude| of each section (98 =
   the strongest 2 % saturate); lower = weak events stand out more. The same clip rule as the app's CDP Stack.
-- **Figure height** - height of the figures in inches; the width is 12 inches. 6 (the default) gives the same size as
-  the CDP Stack sections of the app's Flow (12 × 6.5 inches, 110 dpi).
+- **Figure height** - height of the figures in inches; the width is 12 inches. 7 (the default) gives the same size as
+  the CDP Stack sections of the app's Flow (its figure height 7 → 12 × 7.5 inches, 110 dpi).
 - **Axis limits** - the window of the figures (0 and 0 = the whole axis): **IL section: from / to XL** = the horizontal
   range of the left panel (the inline section runs along the crosslines); **XL section: from / to IL** = the horizontal
   range of the right panel; **Input figure: from / to** = the vertical range of the input sections (depth or ms);
